@@ -1,0 +1,12 @@
+{
+  "id": "virtualKeyboard",
+  "name": "Virtual Keyboard",
+  "description": "Toggles the on-screen keyboard (wvkbd)",
+  "version": "1.0.0",
+  "author": "Antigravity",
+  "icon": "keyboard",
+  "type": "widget",
+  "capabilities": ["dankbar-widget"],
+  "component": "./VirtualKeyboard.qml",
+  "permissions": ["process"]
+}

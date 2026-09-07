@@ -1,0 +1,12 @@
+{
+  "id": "closeWindow",
+  "name": "Close Window",
+  "description": "Closes the currently focused window in MangoWM",
+  "version": "1.0.0",
+  "author": "Antigravity",
+  "icon": "close",
+  "type": "widget",
+  "capabilities": ["dankbar-widget"],
+  "component": "./CloseWindow.qml",
+  "permissions": ["process"]
+}

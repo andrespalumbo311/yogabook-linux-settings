@@ -1,0 +1,14 @@
+[Unit]
+Description=wvkbd - Virtual On-Screen Keyboard
+PartOf=mango-session.target
+After=mango-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/home/andres/.local/bin/wvkbd --hidden -l full,special,emoji --bg 1e1e2eff --fg 313244ff --fg-sp 45475aff --text cdd6f4ff --press 89b4faff -R 10 -H 340 -L 220
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=mango-session.target

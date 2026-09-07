@@ -1,0 +1,14 @@
+[Unit]
+Description=Smart Auto-Rotation for Yoga Book (Laptop/Tablet aware)
+PartOf=mango-session.target
+After=mango-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/home/andres/.local/bin/yogabook-autorotate
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=mango-session.target

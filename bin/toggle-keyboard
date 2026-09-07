@@ -1,0 +1,8 @@
+#!/bin/bash
+if pgrep -x wvkbd >/dev/null 2>&1; then
+    kill -RTMIN $(pgrep -x wvkbd | head -n1)
+else
+    systemctl --user start wvkbd.service
+    sleep 0.2
+    kill -SIGUSR2 $(pgrep -x wvkbd | head -n1) 2>/dev/null
+fi
