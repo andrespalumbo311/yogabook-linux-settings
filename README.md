@@ -1,70 +1,71 @@
 # Lenovo Yoga Book (YB1-X91F) – Linux Configurations & Dotfiles
 
-Questo repository contiene tutte le configurazioni ufficiali, gli script personalizzati, i servizi di sistema e le ottimizzazioni hardware/software sviluppate per il **Lenovo Yoga Book (YB1-X91F)** su **Arch Linux** con **MangoWC** e **DMS (Dank Material Shell)**.
+This repository contains the official configuration files, custom scripts, system services, and hardware/software optimizations developed for the **Lenovo Yoga Book 1st Gen (YB1-X91F / YB1-X90F series)** running **Arch Linux** with **MangoWC** (lightweight wlroots Wayland compositor) and **DMS (Dank Material Shell)**.
 
-Tutti i file di configurazione attivi nell'ambiente utente (`~/.config/`, `~/.local/bin/`, plugin DMS) sono **collegati tramite collegamenti simbolici (symlink)** ai file di questo repository. Modificando i file all'interno di questa cartella, le modifiche si rifletteranno istantaneamente nel sistema.
+All active user configurations on the system (`~/.config/`, `~/.local/bin/`, DMS plugins) are **symbolic links** pointing to this repository. Any changes made inside this repository reflect instantly on the running system.
 
 ---
 
-## 📁 Struttura del Repository
+## 📁 Repository Structure
 
 ```text
 yogabook-config/
-├── README.md                      # Questa documentazione
-├── YOGABOOK_SETUP_REPORT.md       # Report dettagliato con spiegazione tecnica di tutti gli interventi
-├── install.sh                     # Script per creare/ripristinare tutti i symlink
+├── README.md                      # Usage guide and project overview
+├── AGENTS.md                      # Architecture guide and instructions for AI agents
+├── YOGABOOK_SETUP_REPORT.md       # Full technical report detailing all hardware interventions
+├── install.sh                     # Idempotent linker script to set up/restore all symlinks
 │
-├── bin/                           # Script eseguibili utente (~/.local/bin)
-│   ├── yogabook-autorotate        # Daemon intelligente di auto-rotazione (apertura cerniera, Flat-Lock, guardia singolarità)
-│   ├── toggle-keyboard            # Toggle rapido visibilità tastiera a schermo wvkbd
-│   └── wvkbd                      # Binario tastiera Wayland on-screen con bordi arrotondati
+├── bin/                           # User executables (symlinked to ~/.local/bin/)
+│   ├── yogabook-autorotate        # Smart posture & auto-rotation daemon (2D projection, singularity guard, table flat-lock)
+│   ├── toggle-keyboard            # Toggle script for wvkbd on-screen virtual keyboard
+│   └── wvkbd                      # wvkbd-mobintl binary (compiled for minimal footprint)
 │
-├── config/                        # Configurazioni utente (~/.config)
+├── config/                        # User dotfiles (symlinked to ~/.config/)
 │   ├── mango/
-│   │   └── config.conf            # Configurazione super-ottimizzata di MangoWC (basso consumo CPU/GPU, Wacom mapping)
+│   │   └── config.conf            # Ultra-low-power MangoWC compositor config (Wacom mapping, rounded corners)
 │   ├── systemd/
 │   │   └── user/
-│   │       ├── rot8.service       # Servizio utente per yogabook-autorotate
-│   │       └── wvkbd.service      # Servizio utente per wvkbd (avvio in background con flag --hidden)
-│   └── DankMaterialShell/         # Personalizzazioni e plugin DMS
-│       ├── plugin_settings.json   # Impostazioni attive dei plugin DMS
-│       ├── plugins.lock.json      # Stato di attivazione dei plugin DMS
+│   │       ├── rot8.service       # User systemd service for yogabook-autorotate
+│   │       └── wvkbd.service      # User systemd service for wvkbd (--hidden background daemon)
+│   └── DankMaterialShell/         # DMS configurations and custom QML plugins
+│       ├── plugin_settings.json   # Active DMS plugin settings
+│       ├── plugins.lock.json      # DMS plugin lock state
 │       └── plugins/
-│           ├── VirtualKeyboard/   # Widget tastiera a schermo nella barra superiore di DMS
-│           └── CloseWindow/       # Widget chiudi finestra (pulsante ✕ rosso) nella barra superiore
+│           ├── VirtualKeyboard/   # Top-bar virtual keyboard trigger widget
+│           └── CloseWindow/       # Top-bar active window close widget (✕ red button)
 │
-└── system/                        # Copie e sorgenti dei file di configurazione di sistema (/etc)
-    ├── pamac_fix/                 # Modulo C per bypassare il limite Landlock del kernel su Pacman 7 / libpamac
+└── system/                        # System configuration files and low-level patches (/etc)
+    ├── pamac_fix/                 # C source & Makefile to bypass Landlock sandbox limit on Pacman 7 / libpamac
     │   ├── pamac_fix.c
     │   └── Makefile
-    └── etc/
-        ├── fstab                  # Ottimizzazioni I/O per memoria flash eMMC (noatime, commit=60)
-        ├── mkinitcpio.conf        # Moduli precoci (pwm_lpss, pwm_lpss_platform, i915) per ripristino backlight dopo standby
-        ├── ld.so.preload          # Preload per pamac_fix.so
+    └── etc/                       # Canonical copies of tuned system files
+        ├── fstab                  # Flash eMMC wear & latency optimizations (noatime, commit=60)
+        ├── mkinitcpio.conf        # Early KMS & PWM modules (pwm_lpss, pwm_lpss_platform, i915) for backlight recovery
+        ├── ld.so.preload          # Preload entry for pamac_fix.so
         ├── sysctl.d/
-        │   └── 99-zram-performance.conf # Parametri ZRAM (swappiness=180) e gestione dirty memory su flash lenta
+        │   └── 99-zram-performance.conf # ZRAM swappiness=180 and dirty memory flush limits
         ├── systemd/
         │   ├── journald.conf.d/
-        │   │   └── 00-size-limit.conf   # Limite dimensione log journald a 50 MB
+        │   │   └── 00-size-limit.conf   # Caps systemd journal to 50MB to prevent storage exhaustion
         │   └── logind.conf.d/
-        │       └── yogabook.conf        # Azione sospensione su chiusura coperchio e pressione tasto power
+        │       └── yogabook.conf        # Lid switch & power key mapped to s2idle suspend
         └── touch_keyboard/
-            ├── touch-hw.csv       # Parametri fisici della tastiera Halo / Create Pad (rotazione 270°)
-            └── layout.csv         # Mappa tastiera attiva
+            ├── touch-hw.csv       # Physical dimensions & 270° orientation of Halo Keyboard
+            └── layout.csv         # Active Halo Keyboard layout
 ```
 
 ---
 
-## 🚀 Installazione e Ripristino dei Symlink
+## 🚀 Installation & Symlink Management
 
-Per ripristinare o creare i symlink sui percorsi di configurazione dell'utente:
+To link all user configurations to their active system paths:
 
 ```bash
 cd ~/yogabook-config
 ./install.sh
 ```
 
-Per aggiornare anche i file di configurazione in `/etc` (richiede privilegi `sudo`):
+To also synchronize system configuration files in `/etc` (requires `sudo` privileges):
 
 ```bash
 ./install.sh --system
@@ -72,24 +73,26 @@ Per aggiornare anche i file di configurazione in `/etc` (richiede privilegi `sud
 
 ---
 
-## 🛠️ Riepilogo dei Componenti Chiave
+## 🛠️ Summary of Key Components
 
-1. **Auto-Rotazione Cerniera e Schermo (`bin/yogabook-autorotate`)**:
-   - Calcola in tempo reale l'angolo di apertura reale ($0^\circ-360^\circ$) proiettando i vettori gravità nel piano perpendicolare alla cerniera.
-   - **Laptop mode ($\le 150^\circ$)**: display bloccato fisso in landscape (`270`), rotazione disattivata, tastiera virtuale nascosta.
-   - **Tablet / Flat mode ($\ge 158^\circ$)**: rotazione automatica attiva.
-   - **Flat-Lock a 53°**: congela l'orientamento quando il dispositivo viene appoggiato in piano su un tavolo, impedendo rotazioni indesiderate.
-   - **Guardia di Singolarità**: mantiene lo stato attivo durante il sollevamento o rotazione laterale del portatile.
+### 1. Smart Hinge & Screen Auto-Rotation (`bin/yogabook-autorotate`)
+- **Real Hinge Angle Measurement ($0^\circ-360^\circ$)**: Projects gravity vectors onto the plane perpendicular to the physical hinge (X-Z cross-section), making angle calculation 100% immune to lateral roll/tilt up to $70^\circ+$.
+- **Hinge Singularity Guard**: When the device is placed sideways (gravity parallel to the hinge axis), the daemon freezes the current mode (`laptop` vs `tablet`), preventing accidental flips when lifting or tilting the device.
+- **Laptop Mode ($\le 150^\circ$)**: Screen locked to standard landscape (`270`), auto-rotation disabled, on-screen keyboard dismissed.
+- **Tablet / Flat / Book Mode ($\ge 158^\circ$)**: Dynamic auto-rotation enabled.
+- **Table Flat-Lock ($< 53^\circ$ tilt, $|z| > 0.60$)**: Freezes orientation when the device is placed flat on a table or lap, preventing unwanted flips to landscape when resting in portrait.
 
-2. **Digitalizzatore Wacom Create Pad (`config/mango/config.conf`)**:
-   - Corretto l'orientamento con `tablet_map_to_mon=DSI-1`, allineando il digitalizzatore 1:1 con la rotazione hardware del display.
+### 2. Wacom Create Pad Digitizer (`config/mango/config.conf`)
+- The Create Pad / Halo Keyboard digitizer (`Wacom HID 169 Pen` `056A:0169`) is physically oriented in portrait (1200×1920) matching the display panel.
+- Fixed coordinate misalignment (90°/270° offset) by binding `tablet_map_to_mon=DSI-1` in MangoWC, correctly syncing the input coordinates 1:1 with the landscape screen transform.
 
-3. **Standby / Sospensione Profonda (`system/etc/mkinitcpio.conf` & `logind.conf.d`)**:
-   - Risolto lo schermo nero al risveglio dal suspend inserendo i moduli `pwm_lpss`, `pwm_lpss_platform` e `i915` nell'initramfs, garantendo il corretto funzionamento del controller PWM della retroilluminazione.
-   - Chiusura lid configurata su sospensione `s2idle`, tasto power configurato per sospendere / risvegliare invece di spegnere.
+### 3. Standby & Backlight Recovery (`system/etc/mkinitcpio.conf` & `logind.conf.d`)
+- Fixed black screen on resume from suspend (`s2idle`) by including `pwm_lpss`, `pwm_lpss_platform`, and `i915` in `/etc/mkinitcpio.conf`. This guarantees the Cherry Trail SoC PWM hardware controller is available before display initialization, enabling proper backlight restoration.
+- Configured `/etc/systemd/logind.conf.d/yogabook.conf` so closing the lid suspends the system, and a short press of the power button suspends/resumes instead of triggering an accidental power off.
 
-4. **Tastiera Virtuale a Basso Consumo (`bin/wvkbd`, `bin/toggle-keyboard`)**:
-   - Consumo RAM ridotto a soli ~1.4 MB, latenza 0 ms, integrata con widget nella barra DMS.
+### 4. Low-Power Virtual On-Screen Keyboard (`bin/wvkbd`, `bin/toggle-keyboard`)
+- Uses `wvkbd-mobintl` with an ultra-low memory footprint (~1.4 MB of RAM) and 0 ms appearance latency (runs hidden in the background via `wvkbd.service`).
+- Styled with rounded corners (`-R 10`) and Catppuccin color scheme matching DMS.
 
-5. **Fix Pacman 7 / Pamac GUI (`system/pamac_fix/`)**:
-   - Bypass del sandboxing Landlock per consentire la sincronizzazione istantanea dei repository su kernel con configurazioni Landlock disabilitate.
+### 5. Pacman 7 / Pamac Landlock Bypass (`system/pamac_fix/`)
+- Intercepts `alpm_sandbox_setup_child` via `/etc/ld.so.preload` returning `0`, allowing `libpamac` and GUI app stores to synchronize repositories seamlessly on kernels without Landlock support.
