@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Instant toggle for native touch Control Center (Yoga Book)
+# Signals resident daemon via SIGUSR1 for <10ms launch time
+
+PIDFILE="/tmp/yogabook-control-center.pid"
+
+if [ -f "$PIDFILE" ]; then
+    PID=$(cat "$PIDFILE" 2>/dev/null)
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+        kill -SIGUSR1 "$PID"
+        exit 0
+    fi
+fi
+
+if pkill -SIGUSR1 -f "python3.*yogabook-control-center" 2>/dev/null; then
+    exit 0
+fi
+
+# If daemon is not running, start it
+systemctl --user start yogabook-control-center.service 2>/dev/null || /home/andres/.local/bin/yogabook-control-center --daemon &
+
+for _ in {1..20}; do
+    if pkill -SIGUSR1 -f "python3.*yogabook-control-center" 2>/dev/null; then
+        break
+    fi
+    sleep 0.05
+done

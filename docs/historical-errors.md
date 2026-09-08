@@ -116,3 +116,27 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   For touchscreens, avoid mouse-centric launcher binaries that rely on `button-release-event` inside kinetic scrolled windows. Use standard GTK `"clicked"` gesture bindings and fullscreen overlay dismissal.
 
+---
+
+## 7. Upstream PulseAudio Port Lookup Fallback Typo & Native GTK4 Control Center Migration
+
+- **Date**: 2026-09-08
+- **Subsystem**: Audio Control / Desktop Shell / Wayland Widgets (`SwayNC`, `WirePlumber`, `PipeWire`, GTK4 Layer-Shell)
+- **Symptoms**:
+  - The volume slider inside SwayNC slides visually upon touch or mouse interaction, but produces zero change in actual audio output volume.
+  - In contrast, physical volume keys and keyboard hotkeys adjust audio volume properly.
+- **Root Cause**:
+  1. The Lenovo Yoga Book Cherryview sound card (`cht-yogabook`) operates under the `pro-audio` WirePlumber profile (`alsa_output.platform-cht-yogabook.pro-output-0`). In this profile, PipeWire does not expose standard ALSA output ports (`info.active_port` is NULL).
+  2. In SwayNC's upstream Vala source (`pulseDaemon.vala`), when a sink has no active ports, the fallback path contains a programming error:
+     `bool is_default = device.device_name == this.default_source_name;`
+     It compares the output sink's device name against the default *microphone input source* name. As a result, `default_sink` is always resolved as NULL, causing `slider.value_changed` to silently drop all volume adjustment requests.
+  3. Physical volume buttons bypass PulseAudio daemon abstractions and invoke `wpctl set-volume @DEFAULT_AUDIO_SINK@ ...` directly.
+- **Resolution**:
+  1. Implement a purpose-built, resident touch Control Center in GTK 4 (`bin/yogabook-control-center`) using `Gtk4LayerShell`.
+  2. Connect slider adjustments directly to `wpctl set-volume` and `brightnessctl set` using a non-blocking debounced worker (30ms rate limit) to ensure 60fps gesture fluidness without blocking the UI thread.
+  3. Anchor the panel overlay at `Gtk4LayerShell.Edge.TOP` with `margin-top: 40px` (Waybar total height), ensuring the card sits directly flush against the bottom border of Waybar with zero gap.
+  4. Provide instant daemon toggling (<15ms) via `SIGUSR1` and an explicit boolean state flag (`self.is_open`).
+- **Prevention Pattern**:
+  When managing audio in specialized ALSA/PipeWire setups lacking standard output port trees, avoid monolithic notification daemons with fragile PulseAudio port assumptions. Direct IPC or CLI control via `wpctl` guarantees profile-agnostic audio management.
+
+

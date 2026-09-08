@@ -40,6 +40,8 @@ link_file "$REPO_DIR/bin/yogabook-autorotate" "$HOME_DIR/.local/bin/yogabook-aut
 link_file "$REPO_DIR/bin/toggle-keyboard"     "$HOME_DIR/.local/bin/toggle-keyboard"
 link_file "$REPO_DIR/bin/toggle-launcher"     "$HOME_DIR/.local/bin/toggle-launcher"
 link_file "$REPO_DIR/bin/yogabook-launcher"   "$HOME_DIR/.local/bin/yogabook-launcher"
+link_file "$REPO_DIR/bin/toggle-control-center" "$HOME_DIR/.local/bin/toggle-control-center"
+link_file "$REPO_DIR/bin/yogabook-control-center" "$HOME_DIR/.local/bin/yogabook-control-center"
 link_file "$REPO_DIR/bin/ws-status"           "$HOME_DIR/.local/bin/ws-status"
 link_file "$REPO_DIR/bin/close-window"        "$HOME_DIR/.local/bin/close-window"
 link_file "$REPO_DIR/bin/zenity-askpass"      "$HOME_DIR/.local/bin/zenity-askpass"
@@ -73,6 +75,7 @@ link_file "$REPO_DIR/config/systemd/user/wvkbd.service"  "$HOME_DIR/.config/syst
 link_file "$REPO_DIR/config/systemd/user/waybar.service" "$HOME_DIR/.config/systemd/user/waybar.service"
 link_file "$REPO_DIR/config/systemd/user/swaync.service" "$HOME_DIR/.config/systemd/user/swaync.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.config/systemd/user/yogabook-launcher.service"
+link_file "$REPO_DIR/config/systemd/user/yogabook-control-center.service" "$HOME_DIR/.config/systemd/user/yogabook-control-center.service"
 
 # 5. Setup Report
 link_file "$REPO_DIR/YOGABOOK_SETUP_REPORT.md" "$HOME_DIR/YOGABOOK_SETUP_REPORT.md"

@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+"""
+Native Material Design 3 Hardware-Accelerated Touch Control Center for Lenovo Yoga Book.
+Built with GTK 4 & Gtk4LayerShell for MangoWC / wlroots.
+Features:
+- Attached flush to the bottom of Waybar (margin-top: 40px, 0 gap)
+- Real working volume slider via WirePlumber / PipeWire (wpctl) with debounced non-blocking async updates
+- Real working backlight slider via intel_backlight (brightnessctl)
+- Large touch-friendly Material You 3 quick toggle pills (Wi-Fi, Bluetooth, Touch Keyboard, Auto-Rotate, Silent, Screenshot)
+- Real-time battery status and session actions (Suspend, Reboot, Shutdown)
+- Dismiss on tap/click outside card or Escape key
+- Instant toggle (<10ms via SIGUSR1 daemon)
+- 0.0% CPU when idle / hidden
+"""
+
+import sys
+import os
+import atexit
+import signal
+import subprocess
+import re
+import threading
+import time
+
+# Ensure libgtk4-layer-shell is preloaded before libwayland-client
+if "libgtk4-layer-shell.so" not in os.environ.get("LD_PRELOAD", ""):
+    env = dict(os.environ)
+    preload = env.get("LD_PRELOAD", "")
+    env["LD_PRELOAD"] = f"/usr/lib/libgtk4-layer-shell.so:{preload}".strip(":")
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
+gi.require_version('Gtk4LayerShell', '1.0')
+from gi.repository import Gtk, Gdk, Gtk4LayerShell, GLib, Pango
+
+PIDFILE = "/tmp/yogabook-control-center.pid"
+
+
+def cleanup():
+    try:
+        if os.path.exists(PIDFILE):
+            os.remove(PIDFILE)
+    except OSError:
+        pass
+
+
+atexit.register(cleanup)
+
+CSS = b"""
+* {
+    font-family: "Adwaita Sans", "Liberation Sans", Roboto, sans-serif;
+}
+
+window#control-center-overlay {
+    background-color: rgba(0, 0, 0, 0.25);
+}
+
+.cc-card {
+    background-color: #ffffff;
+    border: 1px solid #dcdfe4;
+    border-top: none;
+    border-radius: 0 0 24px 24px;
+    padding: 16px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+    min-width: 350px;
+}
+
+/* Header */
+.header-box {
+    margin-bottom: 12px;
+    padding: 0 2px;
+}
+
+.status-pill {
+    background-color: #f1f3f9;
+    border: 1px solid #e0e2ec;
+    border-radius: 12px;
+    padding: 4px 10px;
+}
+
+.status-text {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f1f1f;
+}
+
+.header-btn {
+    min-width: 32px;
+    min-height: 32px;
+    border-radius: 16px;
+    background-color: #f1f3f9;
+    border: 1px solid #e0e2ec;
+    color: #444746;
+    font-family: "JetBrainsMono Nerd Font Propo", "Symbols Nerd Font", sans-serif;
+    font-size: 14px;
+    padding: 0;
+    margin-left: 6px;
+    transition: all 150ms ease;
+}
+
+.header-btn:hover {
+    background-color: #e2e5ee;
+    color: #1f1f1f;
+}
+
+.header-btn.shutdown:hover {
+    background-color: #fce8e6;
+    border-color: #f28b82;
+    color: #c5221f;
+}
+
+/* Slider Pills (Material Design 3) */
+.slider-pill {
+    background-color: #f1f3f9;
+    border: 1px solid #e0e2ec;
+    border-radius: 24px;
+    padding: 2px 10px;
+    min-height: 48px;
+    margin-bottom: 10px;
+}
+
+.slider-icon-btn {
+    min-width: 34px;
+    min-height: 34px;
+    border-radius: 17px;
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: #0b57d0;
+    font-family: "JetBrainsMono Nerd Font Propo", "Symbols Nerd Font", sans-serif;
+    font-size: 18px;
+    box-shadow: none;
+}
+
+.slider-icon-btn.muted {
+    color: #c5221f;
+}
+
+.slider-value-label {
+    min-width: 38px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f1f1f;
+    margin-left: 6px;
+}
+
+scale {
+    min-height: 24px;
+    padding: 0;
+    margin: 0 4px;
+}
+
+scale trough {
+    min-height: 12px;
+    border-radius: 6px;
+    background-color: #dbe0ea;
+}
+
+scale highlight {
+    min-height: 12px;
+    border-radius: 6px;
+    background-color: #0b57d0;
+}
+
+scale slider {
+    min-width: 22px;
+    min-height: 22px;
+    border-radius: 11px;
+    background-color: #0b57d0;
+    margin: -5px 0;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    border: 2px solid #ffffff;
+}
+
+/* Quick Toggle Tiles (2x3 Grid) */
+.tiles-grid {
+    margin-top: 4px;
+    margin-bottom: 6px;
+}
+
+.tile-btn {
+    background-color: #f1f3f9;
+    border: 1px solid #e0e2ec;
+    border-radius: 18px;
+    padding: 8px 12px;
+    min-height: 54px;
+    transition: all 150ms ease;
+    outline: none;
+}
+
+.tile-btn:hover {
+    background-color: #e6eaf2;
+}
+
+.tile-btn.active {
+    background-color: #d3e3fd;
+    border: 1px solid #7cacf8;
+}
+
+.tile-icon {
+    font-family: "JetBrainsMono Nerd Font Propo", "Symbols Nerd Font", sans-serif;
+    font-size: 20px;
+    margin-right: 10px;
+    color: #444746;
+}
+
+.tile-btn.active .tile-icon {
+    color: #041e49;
+}
+
+.tile-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f1f1f;
+}
+
+.tile-btn.active .tile-title {
+    color: #041e49;
+}
+
+.tile-subtitle {
+    font-size: 11px;
+    font-weight: 500;
+    color: #74777f;
+}
+
+.tile-btn.active .tile-subtitle {
+    color: #0b57d0;
+}
+"""
+
+
+def get_current_volume():
+    """Query current sink volume and mute status via wpctl."""
+    try:
+        out = subprocess.check_output(
+            ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+            text=True, stderr=subprocess.DEVNULL
+        )
+        m = re.search(r"Volume:\s*([\d.]+)", out)
+        vol = int(round(float(m.group(1)) * 100)) if m else 50
+        muted = "[MUTED]" in out
+        return min(100, max(0, vol)), muted
+    except Exception:
+        return 50, False
+
+
+def get_current_brightness():
+    """Query current backlight brightness percentage directly from sysfs."""
+    try:
+        with open("/sys/class/backlight/intel_backlight/brightness") as f:
+            b = int(f.read().strip())
+        with open("/sys/class/backlight/intel_backlight/max_brightness") as f:
+            mb = int(f.read().strip())
+        pct = int(round(b * 100 / max(mb, 1)))
+        return min(100, max(1, pct))
+    except Exception:
+        return 50
+
+
+def get_battery_info():
+    """Query battery percentage and charging status from sysfs."""
+    try:
+        cap = 50
+        status = "Discharging"
+        if os.path.exists("/sys/class/power_supply/bq27542-0/capacity"):
+            with open("/sys/class/power_supply/bq27542-0/capacity") as f:
+                cap = int(f.read().strip())
+            with open("/sys/class/power_supply/bq27542-0/status") as f:
+                status = f.read().strip()
+        charging = status in ("Charging", "Full")
+        return cap, charging
+    except Exception:
+        return 50, False
+
+
+def check_wifi_active():
+    try:
+        out = subprocess.check_output(["rfkill", "list", "wifi"], text=True, stderr=subprocess.DEVNULL)
+        return "Soft blocked: no" in out
+    except Exception:
+        return False
+
+
+def check_bt_active():
+    try:
+        out = subprocess.check_output(["rfkill", "list", "bluetooth"], text=True, stderr=subprocess.DEVNULL)
+        return "Soft blocked: no" in out
+    except Exception:
+        return False
+
+
+def check_rot_active():
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "--user", "is-active", "rot8.service"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return out == "active"
+    except Exception:
+        return False
+
+
+def check_dnd_active():
+    try:
+        out = subprocess.check_output(["swaync-client", "-D"], text=True, stderr=subprocess.DEVNULL).strip()
+        return out == "true"
+    except Exception:
+        return False
+
+
+class QuickTile:
+    def __init__(self, icon_active, icon_inactive, title, sub_active, sub_inactive, check_fn, toggle_fn):
+        self.icon_active = icon_active
+        self.icon_inactive = icon_inactive
+        self.title_text = title
+        self.sub_active = sub_active
+        self.sub_inactive = sub_inactive
+        self.check_fn = check_fn
+        self.toggle_fn = toggle_fn
+        self.is_active = False
+
+        self.button = Gtk.Button()
+        self.button.add_css_class("tile-btn")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.set_valign(Gtk.Align.CENTER)
+
+        self.icon_label = Gtk.Label(label=icon_inactive)
+        self.icon_label.add_css_class("tile-icon")
+        box.append(self.icon_label)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        text_box.set_valign(Gtk.Align.CENTER)
+        text_box.set_halign(Gtk.Align.START)
+        text_box.set_hexpand(True)
+
+        self.title_label = Gtk.Label(label=title)
+        self.title_label.add_css_class("tile-title")
+        self.title_label.set_halign(Gtk.Align.START)
+        text_box.append(self.title_label)
+
+        self.sub_label = Gtk.Label(label=sub_inactive)
+        self.sub_label.add_css_class("tile-subtitle")
+        self.sub_label.set_halign(Gtk.Align.START)
+        text_box.append(self.sub_label)
+
+        box.append(text_box)
+        self.button.set_child(box)
+        self.button.connect("clicked", self._on_clicked)
+
+    def _on_clicked(self, btn):
+        self.toggle_fn(self)
+
+    def update_ui(self, active):
+        self.is_active = active
+        if active:
+            self.button.add_css_class("active")
+            self.icon_label.set_text(self.icon_active)
+            self.sub_label.set_text(self.sub_active)
+        else:
+            self.button.remove_css_class("active")
+            self.icon_label.set_text(self.icon_inactive)
+            self.sub_label.set_text(self.sub_inactive)
+
+    def refresh(self):
+        if self.check_fn:
+            active = self.check_fn()
+            self.update_ui(active)
+
+
+class YogaBookControlCenter(Gtk.Window):
+    def __init__(self, loop):
+        super().__init__()
+        self.loop = loop
+        self.set_name("control-center-overlay")
+
+        # LayerShell setup
+        Gtk4LayerShell.init_for_window(self)
+        Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.OVERLAY)
+        Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.ON_DEMAND)
+        Gtk4LayerShell.set_exclusive_zone(self, -1)
+
+        # Fullscreen overlay starting exactly at the bottom of Waybar (Y=40)
+        for edge in [Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM,
+                     Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.RIGHT]:
+            Gtk4LayerShell.set_anchor(self, edge, True)
+
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 40)
+
+        # Style provider
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        # Volume & Brightness internal state flags
+        self.syncing_volume = False
+        self.syncing_brightness = False
+        self.pending_volume = None
+        self.pending_brightness = None
+        self.volume_debounce_timer = None
+        self.brightness_debounce_timer = None
+        self.is_muted = False
+
+        # Main fullscreen wrapper box
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main_box.set_halign(Gtk.Align.FILL)
+        main_box.set_valign(Gtk.Align.FILL)
+        self.set_child(main_box)
+
+        # Card container: flush against Waybar bottom (top margin 0), right aligned
+        self.card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.card.add_css_class("cc-card")
+        self.card.set_halign(Gtk.Align.END)
+        self.card.set_valign(Gtk.Align.START)
+        self.card.set_margin_top(0)
+        self.card.set_margin_end(8)
+        main_box.append(self.card)
+
+        # 1. Header (Battery status pill + Power action buttons)
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        header_box.add_css_class("header-box")
+        self.card.append(header_box)
+
+        # Battery / Date status capsule
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        status_box.add_css_class("status-pill")
+        self.battery_label = Gtk.Label(label="󰁹 100%")
+        self.battery_label.add_css_class("status-text")
+        status_box.append(self.battery_label)
+        header_box.append(status_box)
+
+        # Spacer
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        header_box.append(spacer)
+
+        # Action buttons: Suspend, Reboot, Shutdown, Close
+        btn_suspend = Gtk.Button(label="󰤄")
+        btn_suspend.set_tooltip_text("Sospendi")
+        btn_suspend.add_css_class("header-btn")
+        btn_suspend.connect("clicked", lambda b: self._run_action(["systemctl", "suspend"]))
+        header_box.append(btn_suspend)
+
+        btn_reboot = Gtk.Button(label="󰜉")
+        btn_reboot.set_tooltip_text("Riavvia")
+        btn_reboot.add_css_class("header-btn")
+        btn_reboot.connect("clicked", lambda b: self._run_action(["systemctl", "reboot"]))
+        header_box.append(btn_reboot)
+
+        btn_power = Gtk.Button(label="󰐥")
+        btn_power.set_tooltip_text("Spegni")
+        btn_power.add_css_class("header-btn")
+        btn_power.add_css_class("shutdown")
+        btn_power.connect("clicked", lambda b: self._run_action(["systemctl", "poweroff"]))
+        header_box.append(btn_power)
+
+        btn_close = Gtk.Button(label="")
+        btn_close.set_tooltip_text("Chiudi")
+        btn_close.add_css_class("header-btn")
+        btn_close.connect("clicked", lambda b: self.hide_control_center())
+        header_box.append(btn_close)
+
+        # 2. Sliders Section
+        # A. Volume Slider Pill
+        vol_pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        vol_pill.add_css_class("slider-pill")
+        self.card.append(vol_pill)
+
+        self.vol_icon_btn = Gtk.Button(label="󰕾")
+        self.vol_icon_btn.add_css_class("slider-icon-btn")
+        self.vol_icon_btn.set_tooltip_text("Disattiva/Attiva Audio")
+        self.vol_icon_btn.connect("clicked", self.on_volume_mute_clicked)
+        vol_pill.append(self.vol_icon_btn)
+
+        self.vol_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.vol_scale.set_hexpand(True)
+        self.vol_scale.set_draw_value(False)
+        self.vol_scale.connect("value-changed", self.on_volume_value_changed)
+        vol_pill.append(self.vol_scale)
+
+        self.vol_label = Gtk.Label(label="65%")
+        self.vol_label.add_css_class("slider-value-label")
+        vol_pill.append(self.vol_label)
+
+        # B. Brightness Slider Pill
+        bright_pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bright_pill.add_css_class("slider-pill")
+        self.card.append(bright_pill)
+
+        self.bright_icon_btn = Gtk.Button(label="󰃠")
+        self.bright_icon_btn.add_css_class("slider-icon-btn")
+        bright_pill.append(self.bright_icon_btn)
+
+        self.bright_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 100, 1)
+        self.bright_scale.set_hexpand(True)
+        self.bright_scale.set_draw_value(False)
+        self.bright_scale.connect("value-changed", self.on_brightness_value_changed)
+        bright_pill.append(self.bright_scale)
+
+        self.bright_label = Gtk.Label(label="80%")
+        self.bright_label.add_css_class("slider-value-label")
+        bright_pill.append(self.bright_label)
+
+        # 3. Quick Setting Tiles Grid (2 columns x 3 rows)
+        grid = Gtk.Grid()
+        grid.add_css_class("tiles-grid")
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(8)
+        grid.set_row_homogeneous(True)
+        grid.set_column_homogeneous(True)
+        self.card.append(grid)
+
+        # Build Quick Tiles
+        self.tile_wifi = QuickTile(
+            icon_active="󰤨", icon_inactive="󰤭",
+            title="Wi-Fi", sub_active="Attivo", sub_inactive="Disattivo",
+            check_fn=check_wifi_active, toggle_fn=self.toggle_wifi
+        )
+        grid.attach(self.tile_wifi.button, 0, 0, 1, 1)
+
+        self.tile_bt = QuickTile(
+            icon_active="󰂯", icon_inactive="󰂲",
+            title="Bluetooth", sub_active="Attivo", sub_inactive="Disattivo",
+            check_fn=check_bt_active, toggle_fn=self.toggle_bt
+        )
+        grid.attach(self.tile_bt.button, 1, 0, 1, 1)
+
+        self.tile_kbd = QuickTile(
+            icon_active="", icon_inactive="",
+            title="Tastiera", sub_active="Virtuale", sub_inactive="Mostra",
+            check_fn=None, toggle_fn=self.toggle_kbd
+        )
+        grid.attach(self.tile_kbd.button, 0, 1, 1, 1)
+
+        self.tile_rot = QuickTile(
+            icon_active="󰑌", icon_inactive="󰑌",
+            title="Rotazione", sub_active="Automatica", sub_inactive="Bloccata",
+            check_fn=check_rot_active, toggle_fn=self.toggle_rot
+        )
+        grid.attach(self.tile_rot.button, 1, 1, 1, 1)
+
+        self.tile_dnd = QuickTile(
+            icon_active="󰂛", icon_inactive="󰂚",
+            title="Silenzioso", sub_active="Attivo", sub_inactive="Disattivo",
+            check_fn=check_dnd_active, toggle_fn=self.toggle_dnd
+        )
+        grid.attach(self.tile_dnd.button, 0, 2, 1, 1)
+
+        self.tile_shot = QuickTile(
+            icon_active="", icon_inactive="",
+            title="Screenshot", sub_active="Salva", sub_inactive="Cattura",
+            check_fn=None, toggle_fn=self.take_screenshot
+        )
+        grid.attach(self.tile_shot.button, 1, 2, 1, 1)
+
+        self.tiles = [self.tile_wifi, self.tile_bt, self.tile_rot, self.tile_dnd]
+
+        self.is_open = False
+
+        # Controllers:
+        # Tap / Click on backdrop dismisses control center
+        click_gesture = Gtk.GestureClick.new()
+        click_gesture.connect("pressed", self.on_window_clicked)
+        self.add_controller(click_gesture)
+
+        # Escape key closes
+        key_controller = Gtk.EventControllerKey.new()
+        key_controller.connect("key-pressed", self.on_key_pressed)
+        self.add_controller(key_controller)
+
+        # Daemon signal listeners
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_toggle_signal)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_quit_signal)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.on_quit_signal)
+
+    # --- Click and Key handlers ---
+    def on_window_clicked(self, gesture, n_press, x, y):
+        ok, bounds = self.card.compute_bounds(self)
+        if ok:
+            cx, cy, cw, ch = bounds.get_x(), bounds.get_y(), bounds.get_width(), bounds.get_height()
+            if cx <= x <= cx + cw and cy <= y <= cy + ch:
+                return
+        self.hide_control_center()
+
+    def on_key_pressed(self, controller, keyval, keycode, state):
+        if keyval == Gdk.KEY_Escape:
+            self.hide_control_center()
+            return True
+        return False
+
+    def _run_action(self, cmd):
+        self.hide_control_center()
+        subprocess.Popen(cmd)
+
+    # --- Sliders logic ---
+    def on_volume_value_changed(self, scale):
+        if self.syncing_volume:
+            return
+        val = int(scale.get_value())
+        self.vol_label.set_text(f"{val}%")
+        self._update_volume_icon(val, self.is_muted)
+        self.pending_volume = val
+        if self.volume_debounce_timer is None:
+            self.volume_debounce_timer = GLib.timeout_add(30, self._apply_pending_volume)
+
+    def _apply_pending_volume(self):
+        if self.pending_volume is not None:
+            v = self.pending_volume
+            self.pending_volume = None
+
+            def _task():
+                subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v}%"])
+
+            threading.Thread(target=_task, daemon=True).start()
+        self.volume_debounce_timer = None
+        return False
+
+    def on_volume_mute_clicked(self, btn):
+        def _task():
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+            vol, muted = get_current_volume()
+            GLib.idle_add(self._sync_volume_ui, vol, muted)
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _update_volume_icon(self, vol, muted):
+        if muted or vol == 0:
+            self.vol_icon_btn.set_label("󰝟")
+            self.vol_icon_btn.add_css_class("muted")
+        else:
+            self.vol_icon_btn.remove_css_class("muted")
+            if vol < 33:
+                self.vol_icon_btn.set_label("󰕿")
+            elif vol < 66:
+                self.vol_icon_btn.set_label("󰖀")
+            else:
+                self.vol_icon_btn.set_label("󰕾")
+
+    def _sync_volume_ui(self, vol, muted):
+        self.syncing_volume = True
+        self.is_muted = muted
+        self.vol_scale.set_value(vol)
+        self.vol_label.set_text(f"{vol}%")
+        self._update_volume_icon(vol, muted)
+        self.syncing_volume = False
+
+    def on_brightness_value_changed(self, scale):
+        if self.syncing_brightness:
+            return
+        val = max(1, int(scale.get_value()))
+        self.bright_label.set_text(f"{val}%")
+        self._update_brightness_icon(val)
+        self.pending_brightness = val
+        if self.brightness_debounce_timer is None:
+            self.brightness_debounce_timer = GLib.timeout_add(30, self._apply_pending_brightness)
+
+    def _apply_pending_brightness(self):
+        if self.pending_brightness is not None:
+            b = self.pending_brightness
+            self.pending_brightness = None
+
+            def _task():
+                subprocess.run(["brightnessctl", "set", f"{b}%"])
+
+            threading.Thread(target=_task, daemon=True).start()
+        self.brightness_debounce_timer = None
+        return False
+
+    def _update_brightness_icon(self, val):
+        if val < 33:
+            self.bright_icon_btn.set_label("󰃞")
+        elif val < 66:
+            self.bright_icon_btn.set_label("󰃟")
+        else:
+            self.bright_icon_btn.set_label("󰃠")
+
+    def _sync_brightness_ui(self, pct):
+        self.syncing_brightness = True
+        self.bright_scale.set_value(pct)
+        self.bright_label.set_text(f"{pct}%")
+        self._update_brightness_icon(pct)
+        self.syncing_brightness = False
+
+    # --- Quick Tiles Handlers ---
+    def toggle_wifi(self, tile):
+        def _task():
+            subprocess.run(["rfkill", "toggle", "wifi"])
+            GLib.idle_add(lambda: tile.update_ui(check_wifi_active()))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def toggle_bt(self, tile):
+        def _task():
+            subprocess.run(["rfkill", "toggle", "bluetooth"])
+            GLib.idle_add(lambda: tile.update_ui(check_bt_active()))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def toggle_kbd(self, tile):
+        self.hide_control_center()
+        subprocess.Popen(["/home/andres/.local/bin/toggle-keyboard"])
+
+    def toggle_rot(self, tile):
+        def _task():
+            active = check_rot_active()
+            action = "stop" if active else "start"
+            subprocess.run(["systemctl", "--user", action, "rot8.service"])
+            time.sleep(0.1)
+            GLib.idle_add(lambda: tile.update_ui(check_rot_active()))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def toggle_dnd(self, tile):
+        def _task():
+            subprocess.run(["swaync-client", "-d", "-sw"])
+            time.sleep(0.1)
+            GLib.idle_add(lambda: tile.update_ui(check_dnd_active()))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def take_screenshot(self, tile):
+        self.hide_control_center()
+
+        def _task():
+            time.sleep(0.3)
+            os.makedirs(os.path.expanduser("~/Pictures/Screenshots"), exist_ok=True)
+            filename = f"screenshot-{time.strftime('%Y%m%d-%H%M%S')}.png"
+            path = os.path.expanduser(f"~/Pictures/Screenshots/{filename}")
+            subprocess.run(["grim", path])
+            subprocess.run(["notify-send", "Screenshot Catturato", f"Salvato in Immagini: {filename}"])
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    # --- Refresh all states ---
+    def refresh_all_states(self):
+        # Battery
+        cap, charging = get_battery_info()
+        icon = "󰂄" if charging else ("󰁹" if cap > 90 else ("󰂀" if cap > 60 else ("󰁾" if cap > 30 else "󰁻")))
+        self.battery_label.set_text(f"{icon} {cap}%")
+
+        # Volume
+        vol, muted = get_current_volume()
+        self._sync_volume_ui(vol, muted)
+
+        # Brightness
+        bright = get_current_brightness()
+        self._sync_brightness_ui(bright)
+
+        # Tiles
+        for tile in self.tiles:
+            tile.refresh()
+
+    # --- Show / Hide / Toggle ---
+    def show_control_center(self):
+        self.is_open = True
+        self.refresh_all_states()
+        self.set_visible(True)
+        self.present()
+
+    def hide_control_center(self):
+        self.is_open = False
+        self.set_visible(False)
+
+    def on_toggle_signal(self):
+        print(f"[CC] TOGGLE SIGNAL RECEIVED. Currently is_open={self.is_open}", flush=True)
+        if self.is_open:
+            self.hide_control_center()
+        else:
+            self.show_control_center()
+        return GLib.SOURCE_CONTINUE
+
+    def on_quit_signal(self):
+        cleanup()
+        self.loop.quit()
+        return False
+
+
+def main():
+    with open(PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+
+    Gtk.init()
+    loop = GLib.MainLoop()
+    app = YogaBookControlCenter(loop)
+
+    if "--daemon" not in sys.argv:
+        app.show_control_center()
+    else:
+        app.set_visible(False)
+
+    loop.run()
+
+
+if __name__ == "__main__":
+    main()

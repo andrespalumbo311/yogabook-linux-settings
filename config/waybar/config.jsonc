@@ -92,7 +92,7 @@
         "format-disconnected": "󰤭",
         "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
         "tooltip-format": "{essid} ({signalStrength}%)",
-        "on-click": "swaync-client -t -sw"
+        "on-click": "/home/andres/.local/bin/toggle-control-center"
     },
     "battery": {
         "states": {
@@ -103,14 +103,15 @@
         "format-charging": "󰂄 {capacity}%",
         "format-plugged": "󰚥 {capacity}%",
         "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
-        "tooltip-format": "{timeTo}, salute {health}%"
+        "tooltip-format": "{timeTo}, salute {health}%",
+        "on-click": "/home/andres/.local/bin/toggle-control-center"
     },
     "tray": {
         "icon-size": 18,
         "spacing": 8
     },
     "custom/notification": {
-        "tooltip": "Centro Notifiche e Controlli",
+        "tooltip": "Centro di Controllo Touch (Tasto Dx: Notifiche)",
         "format": "{icon}",
         "format-icons": {
             "notification": "󱅫",
@@ -125,8 +126,8 @@
         "return-type": "json",
         "exec-if": "which swaync-client",
         "exec": "swaync-client -swb",
-        "on-click": "swaync-client -t -sw",
-        "on-click-right": "swaync-client -d -sw",
+        "on-click": "/home/andres/.local/bin/toggle-control-center",
+        "on-click-right": "swaync-client -t -sw",
         "escape": true
     },
     "custom/close": {
