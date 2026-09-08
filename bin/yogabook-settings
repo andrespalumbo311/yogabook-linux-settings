@@ -890,7 +890,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             temp_raw = int(props.get("POWER_SUPPLY_TEMP", 0))
             cycles = props.get("POWER_SUPPLY_CYCLE_COUNT", "--")
 
-            pct = int(round(charge_now * 100.0 / charge_full)) if charge_full > 0 else 0
+            pct = min(100, max(0, int(round(charge_now * 100.0 / charge_full)))) if charge_full > 0 else 0
             power_w = (voltage_now * current_now) / 1e12
 
             status_ita = "In carica" if status == "Charging" else "In uso a batteria"

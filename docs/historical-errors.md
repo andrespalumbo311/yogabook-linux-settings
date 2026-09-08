@@ -152,16 +152,16 @@ This document records architectural, packaging, and runtime issues encountered o
   - A 3-pixel gap existed between the Waybar bottom border and the Control Center card.
 - **Root Cause**:
   1. *Subprocess Block Buffering*: In Python, iterating over `for line in proc.stdout:` uses internal 4KB block buffering on file iterators. For sporadic real-time event streams like `pactl subscribe`, events are buffered in memory and never yielded until 4096 bytes accumulate.
-  2. *Battery Metric Mismatch*: Texas Instruments `bq27542` fuel gauge reports a compensated `capacity` (45%), whereas Waybar's `modules/battery.cpp` calculates `round(charge_now * 100.0 / charge_full)` (51%).
+  2. *Battery Metric Mismatch & Overflow*: Texas Instruments `bq27542` fuel gauge reports a compensated `capacity` (45%), whereas Waybar's `modules/battery.cpp` calculates `round(charge_now * 100.0 / charge_full)` clamped to 100.f. Without clamping, when `charge_now > charge_full` on a full charge, the ratio exceeds 100% (e.g. 104%).
   3. *Daemon vs Posture Coupling*: The rotation toggle checked `systemctl is-active rot8.service`. Because the daemon runs continuously to monitor accelerometers, it returned active even though the daemon deliberately locks orientation to landscape (`270`) in laptop mode.
   4. *Layer-Shell Margin Scale*: Waybar logical height is 38. With Wayland scale 1.5, `38 * 1.5 = 57px`. The Control Center was configured with `margin-top: 40` (60px), leaving a 3-physical-pixel gap (Y=57..59).
 - **Resolution**:
   1. Use `bufsize=1` and an explicit `while self.running: line = proc.stdout.readline()` loop for zero-latency event streaming.
-  2. Synchronize battery parsing to compute `int(round(charge_now * 100.0 / charge_full))` matching Waybar's exact algorithm.
+  2. Synchronize battery parsing to compute `min(100, max(0, int(round(charge_now * 100.0 / charge_full))))` matching Waybar's exact algorithm and upper bound clamp.
   3. In `yogabook-autorotate`, export runtime posture (`mode=laptop` vs `mode=tablet`) to `/run/user/$UID/yogabook-rotation.state`. The Control Center tile displays "Bloccata (Laptop)" when locked and highlights "Attiva (Tablet)" only when auto-rotation is physically enabled.
   4. Adjust Layer-Shell `margin-top` to 38, making the panel flush against Waybar.
 - **Prevention Pattern**:
-  Always use unbuffered line reading (`readline()` with `bufsize=1`) when piping IPC monitoring streams in Python. Always inspect the exact sysfs computation algorithm of parent status bars to prevent widget metric discrepancies.
+  Always use unbuffered line reading (`readline()` with `bufsize=1`) when piping IPC monitoring streams in Python. Always inspect the exact sysfs computation algorithm of parent status bars and clamp all percentage computations (`min(100, max(0, val))`) to prevent values exceeding 100% when instantaneous battery charge exceeds learned full capacity.
 
 ---
 

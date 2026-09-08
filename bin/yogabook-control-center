@@ -273,10 +273,10 @@ def get_battery_info():
                 with open(f"{bdir}/charge_full") as f:
                     cf = int(f.read().strip())
                 if cf > 0:
-                    cap = int(round(cn * 100.0 / cf))
+                    cap = min(100, max(0, int(round(cn * 100.0 / cf))))
             elif os.path.exists(f"{bdir}/capacity"):
                 with open(f"{bdir}/capacity") as f:
-                    cap = int(f.read().strip())
+                    cap = min(100, max(0, int(f.read().strip())))
             if os.path.exists(f"{bdir}/status"):
                 with open(f"{bdir}/status") as f:
                     status = f.read().strip()
