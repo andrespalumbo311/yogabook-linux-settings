@@ -1,0 +1,10 @@
+[Unit]
+Description=Ensure Bluetooth is turned off at boot
+After=systemd-rfkill.service bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rfkill block bluetooth
+
+[Install]
+WantedBy=multi-user.target

@@ -95,6 +95,10 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/greetd/config.toml" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/greetd/config.toml" /etc/greetd/config.toml
     fi
+    if [ -f "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" /etc/systemd/system/bluetooth-default-off.service
+        sudo systemctl enable bluetooth-default-off.service || true
+    fi
     sudo sysctl --system >/dev/null || true
     sudo systemctl daemon-reload || true
     echo "[OK] System configuration files updated."

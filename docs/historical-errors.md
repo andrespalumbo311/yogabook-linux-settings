@@ -163,5 +163,28 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   Always use unbuffered line reading (`readline()` with `bufsize=1`) when piping IPC monitoring streams in Python. Always inspect the exact sysfs computation algorithm of parent status bars to prevent widget metric discrepancies.
 
+---
+
+## 9. Broadcom UART Bluetooth ACPI Firmware Resolution & Default-Off Lifecycle
+
+- **Date**: 2026-09-08
+- **Subsystem**: Bluetooth Subsystem / Kernel Drivers / Power Management (`hci_bcm`, `bluez`, `broadcom-bt-firmware`)
+- **Symptoms**:
+  - Bluetooth inoperable; `bluetooth.service` unit missing.
+  - Kernel logs report: `Bluetooth: hci0: BCM: firmware Patch file not found, tried: 'brcm/BCM4356A2.hcd'`.
+  - BlueZ daemon logs report: `no bluetooth adapter found: The name is not activatable`.
+- **Root Cause**:
+  1. *ACPI UART Firmware Naming*: Broadcom combo chips (BCM4356A2 / ACPI ID `BCM2E8A:00`) attached via serdev/UART lack USB vendor/product IDs. The kernel `hci_bcm` driver requests a generic `/lib/firmware/brcm/BCM4356A2.hcd`. The AUR package `broadcom-bt-firmware-git` distributes these files named by vendor-product sub-ID (e.g. `BCM4356A2-0a5c-640e.hcd` for Lenovo 4356 NGFF combo).
+  2. *Uninstalled Protocol Stack*: `bluez` and `bluez-utils` were not installed on the minimal installation.
+- **Resolution**:
+  1. Install `broadcom-bt-firmware-git`, `bluez`, and `bluez-utils`.
+  2. Create a canonical symlink `/usr/lib/firmware/brcm/BCM4356A2.hcd -> BCM4356A2-0a5c-640e.hcd`.
+  3. Enable `bluetooth.service` for system D-Bus activation.
+  4. Create and enable `bluetooth-default-off.service` (`rfkill block bluetooth` at multi-user boot) to enforce zero standby battery drain on boot.
+  5. In `yogabook-control-center`, connect the Bluetooth quick toggle to both `rfkill` unblock/block and `bluetoothctl power on/off`.
+- **Prevention Pattern**:
+  On SoC platforms with UART/serdev Broadcom Bluetooth, always verify whether the kernel driver expects a generic `.hcd` alias rather than vendor-tagged firmware filenames. Ensure default-off power management services do not cut radio power concurrently during active driver baudrate negotiation.
+
+
 
 
