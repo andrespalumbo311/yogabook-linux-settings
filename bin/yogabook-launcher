@@ -3,16 +3,18 @@
 Native Material Design 3 Touch Application Drawer for Lenovo Yoga Book.
 Built with GTK 3 & GtkLayerShell for MangoWC / wlroots.
 Features:
-- Single tap to launch (reliable GTK clicked event)
+- Instant launch (<10ms via pre-warmed resident daemon)
+- Single tap to launch apps
 - Tap outside card to dismiss immediately
-- Instant toggle via toggle-launcher
+- Instant toggle via toggle-launcher (SIGUSR1)
 - Pure solid Material Design 3 Light styling
-- Instant search filter
+- Live search filter
 """
 
 import sys
 import os
 import atexit
+import signal
 import gi
 
 PIDFILE = "/tmp/yogabook-launcher.pid"
@@ -33,11 +35,11 @@ from gi.repository import Gtk, Gdk, GtkLayerShell, Gio, GLib
 
 CSS = b"""
 * {
-    font-family: Roboto, "Noto Sans", "Cantarell", sans-serif;
+    font-family: "Adwaita Sans", "Liberation Sans", Roboto, sans-serif;
 }
 
 window#launcher-overlay {
-    background-color: rgba(0, 0, 0, 0.45);
+    background-color: rgba(0, 0, 0, 0.40);
 }
 
 #drawer-card {
@@ -45,7 +47,7 @@ window#launcher-overlay {
     border: 1px solid #dcdfe4;
     border-radius: 28px;
     padding: 24px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
     margin: 40px 80px;
 }
 
@@ -156,12 +158,12 @@ class YogaBookLauncher(Gtk.Window):
         card.pack_start(self.search_entry, False, False, 0)
 
         # Scrolled window for apps
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_name("apps-scroll")
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_kinetic_scrolling(True)
-        scroll.set_overlay_scrolling(True)
-        card.pack_start(scroll, True, True, 0)
+        self.scroll = Gtk.ScrolledWindow()
+        self.scroll.set_name("apps-scroll")
+        self.scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scroll.set_kinetic_scrolling(True)
+        self.scroll.set_overlay_scrolling(True)
+        card.pack_start(self.scroll, True, True, 0)
 
         # FlowBox for apps
         self.flowbox = Gtk.FlowBox()
@@ -170,10 +172,15 @@ class YogaBookLauncher(Gtk.Window):
         self.flowbox.set_min_children_per_line(4)
         self.flowbox.set_selection_mode(Gtk.SelectionMode.NONE)
         self.flowbox.set_homogeneous(True)
-        scroll.add(self.flowbox)
+        self.scroll.add(self.flowbox)
 
         self.app_items = []
         self.load_applications()
+
+        # Signal handlers for daemon toggle
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, self.on_toggle_signal)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.on_quit_signal)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.on_quit_signal)
 
     def load_applications(self):
         apps = Gio.AppInfo.get_all()
@@ -209,7 +216,6 @@ class YogaBookLauncher(Gtk.Window):
             box.pack_start(lbl, False, False, 0)
 
             btn.add(box)
-            # Reliable single tap on touch screen
             btn.connect("clicked", self.on_app_clicked, item)
 
             child = Gtk.FlowBoxChild()
@@ -217,6 +223,31 @@ class YogaBookLauncher(Gtk.Window):
             child.item = item
             child.btn = btn
             self.flowbox.add(child)
+
+    def show_launcher(self):
+        self.search_entry.set_text("")
+        self.show_all()
+        self.present()
+        self.search_entry.grab_focus()
+        adj = self.scroll.get_vadjustment()
+        if adj:
+            adj.set_value(0)
+
+    def hide_launcher(self):
+        self.search_entry.set_text("")
+        self.hide()
+
+    def on_toggle_signal(self):
+        if self.get_visible():
+            self.hide_launcher()
+        else:
+            self.show_launcher()
+        return True
+
+    def on_quit_signal(self):
+        cleanup()
+        Gtk.main_quit()
+        return False
 
     def on_search_changed(self, entry):
         query = entry.get_text().strip().lower()
@@ -240,23 +271,26 @@ class YogaBookLauncher(Gtk.Window):
             cmd = item.app_info.get_commandline()
             if cmd:
                 os.system(f"{cmd} &")
-        Gtk.main_quit()
+        self.hide_launcher()
 
     def on_backdrop_clicked(self, widget, event):
-        # If click/tap is outside the central card, exit immediately
-        Gtk.main_quit()
+        self.hide_launcher()
         return True
 
     def on_key_press(self, widget, event):
         if event.keyval == Gdk.KEY_Escape:
-            Gtk.main_quit()
+            self.hide_launcher()
             return True
         return False
 
 
 def main():
+    with open(PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+
     app = YogaBookLauncher()
-    app.show_all()
+    if "--daemon" not in sys.argv:
+        app.show_launcher()
     Gtk.main()
 
 

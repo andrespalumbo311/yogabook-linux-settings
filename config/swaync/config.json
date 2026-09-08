@@ -15,26 +15,71 @@
   "notification-icon-size": 48,
   "notification-body-image-height": 100,
   "notification-body-image-width": 200,
-  "control-center-width": 420,
+  "control-center-width": 430,
   "control-center-height": 720,
   "fit-to-screen": false,
   "widgets": [
     "title",
-    "dnd",
+    "buttons-grid",
     "volume",
     "backlight",
-    "buttons-grid",
     "mpris",
     "notifications"
   ],
   "widget-config": {
     "title": {
-      "text": "Centro di Controllo",
+      "text": "Controllo Rapido",
       "clear-all-button": true,
       "button-text": "Cancella tutto"
     },
-    "dnd": {
-      "text": "Non Disturbare"
+    "buttons-grid": {
+      "buttons-per-row": 2,
+      "actions": [
+        {
+          "label": "󰤨   Wi-Fi",
+          "type": "toggle",
+          "active": true,
+          "command": "rfkill toggle wifi",
+          "update-command": "rfkill list wifi | grep -q 'Soft blocked: no' && echo true || echo false"
+        },
+        {
+          "label": "󰂯   Bluetooth",
+          "type": "toggle",
+          "active": false,
+          "command": "rfkill toggle bluetooth",
+          "update-command": "rfkill list bluetooth | grep -q 'Soft blocked: no' && echo true || echo false"
+        },
+        {
+          "label": "󰂛   Non disturbare",
+          "type": "toggle",
+          "active": false,
+          "command": "swaync-client -d -sw",
+          "update-command": "swaync-client -D 2>/dev/null | grep -q true && echo true || echo false"
+        },
+        {
+          "label": "   Tastiera",
+          "command": "/home/andres/.local/bin/toggle-keyboard"
+        },
+        {
+          "label": "   Screenshot",
+          "command": "sh -c 'grim -g \"$(slurp)\" - | wl-copy && notify-send \"Screenshot\" \"Area copiata negli appunti\"'"
+        },
+        {
+          "label": "󰕾   Muto Audio",
+          "type": "toggle",
+          "active": false,
+          "command": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+          "update-command": "wpctl get-volume @DEFAULT_AUDIO_SINK@ | grep -q MUTED && echo true || echo false"
+        },
+        {
+          "label": "󰤄   Sospendi",
+          "command": "systemctl suspend"
+        },
+        {
+          "label": "󰐥   Spegni",
+          "command": "systemctl poweroff"
+        }
+      ]
     },
     "volume": {
       "label": "󰕾",
@@ -47,39 +92,7 @@
     },
     "mpris": {
       "image-size": 64,
-      "image-radius": 12
-    },
-    "buttons-grid": {
-      "actions": [
-        {
-          "label": "󰤨  Wi-Fi",
-          "type": "toggle",
-          "active": true,
-          "command": "rfkill toggle wifi"
-        },
-        {
-          "label": "󰂯  Bluetooth",
-          "type": "toggle",
-          "active": false,
-          "command": "rfkill toggle bluetooth"
-        },
-        {
-          "label": "  Tastiera",
-          "command": "/home/andres/.local/bin/toggle-keyboard"
-        },
-        {
-          "label": "  Screenshot",
-          "command": "sh -c 'grim -g \"$(slurp)\" - | wl-copy && notify-send \"Screenshot\" \"Area copiata\"'"
-        },
-        {
-          "label": "󰤄  Sospendi",
-          "command": "systemctl suspend"
-        },
-        {
-          "label": "󰐥  Spegni",
-          "command": "systemctl poweroff"
-        }
-      ]
+      "image-radius": 16
     }
   }
 }

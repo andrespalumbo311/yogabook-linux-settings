@@ -70,6 +70,7 @@ link_file "$REPO_DIR/config/systemd/user/rot8.service"   "$HOME_DIR/.config/syst
 link_file "$REPO_DIR/config/systemd/user/wvkbd.service"  "$HOME_DIR/.config/systemd/user/wvkbd.service"
 link_file "$REPO_DIR/config/systemd/user/waybar.service" "$HOME_DIR/.config/systemd/user/waybar.service"
 link_file "$REPO_DIR/config/systemd/user/swaync.service" "$HOME_DIR/.config/systemd/user/swaync.service"
+link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.config/systemd/user/yogabook-launcher.service"
 
 # 5. Setup Report
 link_file "$REPO_DIR/YOGABOOK_SETUP_REPORT.md" "$HOME_DIR/YOGABOOK_SETUP_REPORT.md"

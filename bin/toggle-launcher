@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Deterministic toggle for native touch app launcher (Yoga Book)
+# Instant toggle for native touch app launcher (Yoga Book)
+# Signals resident daemon via SIGUSR1 for <10ms launch time
 PIDFILE="/tmp/yogabook-launcher.pid"
 
 if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
-    rm -f "$PIDFILE"
+    kill -SIGUSR1 "$(cat "$PIDFILE" 2>/dev/null)"
 else
-    rm -f "$PIDFILE"
-    /home/andres/.local/bin/yogabook-launcher &
-    echo $! > "$PIDFILE"
+    /home/andres/.local/bin/yogabook-launcher --daemon &
+    for i in {1..30}; do
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+            kill -SIGUSR1 "$(cat "$PIDFILE")"
+            break
+        fi
+        sleep 0.05
+    done
 fi
