@@ -39,28 +39,28 @@
 .control-center {
   background-color: #ffffff;
   border: 1px solid #e0e3ea;
-  border-radius: 28px;
+  border-radius: 24px;
   color: #1f1f1f;
-  padding: 20px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.14);
+  padding: 12px 10px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.14);
 }
 
 /* Header & Clear all */
 .widget-title {
   color: #1f1f1f;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 700;
-  margin: 2px 6px 14px 6px;
+  margin: 0 4px 10px 4px;
 }
 
 .widget-title button {
   background-color: #f0f3fa;
   border: none;
-  border-radius: 20px;
+  border-radius: 16px;
   color: #1f1f1f;
-  padding: 8px 18px;
+  padding: 5px 12px;
   font-weight: 600;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .widget-title button:hover {
@@ -68,10 +68,10 @@
 }
 
 /* ==============================================================================
- * Android 14 Material You Quick Settings Tiles (Buttons Grid)
+ * DMS / Material You Quick Settings Tiles (Buttons Grid)
  * ============================================================================== */
 .widget-buttons-grid {
-  margin: 6px 0 12px 0;
+  margin: 2px 0 8px 0;
 }
 
 .widget-buttons-grid flowbox {
@@ -87,12 +87,12 @@
 .widget-buttons-grid flowboxchild > button {
   background-color: #f0f3fa;
   border: none;
-  border-radius: 20px;
+  border-radius: 14px;
   color: #1f1f1f;
-  padding: 12px 12px;
-  margin: 4px;
-  min-height: 50px;
-  min-width: 155px;
+  padding: 8px 6px;
+  margin: 3px;
+  min-height: 38px;
+  min-width: 145px;
   box-shadow: none;
   outline: none;
 }
@@ -101,7 +101,7 @@
   background-color: #e2e7f0;
 }
 
-/* Active Quick Tile (Google Blue solid fill like Android 14) */
+/* Active Quick Tile (Google Blue solid fill like DMS / Android) */
 .widget-buttons-grid flowboxchild > button.toggle:checked,
 .widget-buttons-grid flowboxchild > button.active {
   background-color: #0b57d0;
@@ -115,8 +115,8 @@
 
 .widget-buttons-grid flowboxchild > button label {
   font-family: "Adwaita Sans", "Liberation Sans", "Symbols Nerd Font", sans-serif;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .widget-buttons-grid flowboxchild > button.toggle:checked label,
@@ -125,22 +125,22 @@
 }
 
 /* ==============================================================================
- * Android 14 Material You Continuous Pill Sliders (Volume & Brightness)
- * No outer boxes, thick continuous 44px pill tracks
+ * Tactile Material 3 Sliders (Volume & Brightness)
+ * Grabbable white-bordered handle + instant-warp track
  * ============================================================================== */
 .widget-volume,
 .widget-backlight {
   background-color: transparent;
   border: none;
-  padding: 4px 4px;
-  margin: 4px 0;
+  padding: 3px 4px;
+  margin: 2px 0;
 }
 
 .widget-volume label,
 .widget-backlight label {
-  font-size: 22px;
+  font-size: 18px;
   color: #0b57d0;
-  margin-right: 14px;
+  margin-right: 10px;
   font-family: "Symbols Nerd Font", "Font Awesome 7 Free", sans-serif;
 }
 
@@ -151,29 +151,38 @@ scale {
 
 scale trough {
   background-color: #e9eef6;
-  border-radius: 22px;
-  min-height: 44px;
+  border-radius: 7px;
+  min-height: 14px;
   border: none;
   box-shadow: none;
 }
 
 scale highlight {
   background-color: #0b57d0;
-  border-radius: 22px;
-  min-height: 44px;
+  border-radius: 7px;
+  min-height: 14px;
   border: none;
   box-shadow: none;
 }
 
-/* Slider thumb is invisible; the continuous pill fills up seamlessly */
 scale slider {
-  min-height: 0;
-  min-width: 0;
-  opacity: 0;
-  background: transparent;
-  border: none;
-  box-shadow: none;
+  min-height: 22px;
+  min-width: 22px;
+  border-radius: 11px;
+  background-color: #0b57d0;
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.25);
+  margin: -4px 0;
 }
+
+scale slider:hover,
+scale slider:active {
+  background-color: #1a73e8;
+  min-height: 24px;
+  min-width: 24px;
+  border-radius: 12px;
+}
+
 
 /* ==============================================================================
  * MPRIS Media Player (Material You Card)
