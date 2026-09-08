@@ -139,4 +139,29 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   When managing audio in specialized ALSA/PipeWire setups lacking standard output port trees, avoid monolithic notification daemons with fragile PulseAudio port assumptions. Direct IPC or CLI control via `wpctl` guarantees profile-agnostic audio management.
 
+---
+
+## 8. Python Subprocess Stream Block Buffering & Hardware Battery Metric Divergence
+
+- **Date**: 2026-09-08
+- **Subsystem**: Control Center / PipeWire Audio / Sysfs Battery / Posture State (`pactl`, `bq27542-0`, `yogabook-autorotate`)
+- **Symptoms**:
+  - Live volume slider in the Control Center failed to move when volume was changed externally via physical volume keys, even though a background thread monitored `pactl subscribe`.
+  - Battery percentage displayed in Waybar differed from the Control Center card (e.g. 51% vs 45%).
+  - Auto-rotation quick tile displayed "Attiva" (Active blue) while device orientation was physically locked in laptop mode.
+  - A 3-pixel gap existed between the Waybar bottom border and the Control Center card.
+- **Root Cause**:
+  1. *Subprocess Block Buffering*: In Python, iterating over `for line in proc.stdout:` uses internal 4KB block buffering on file iterators. For sporadic real-time event streams like `pactl subscribe`, events are buffered in memory and never yielded until 4096 bytes accumulate.
+  2. *Battery Metric Mismatch*: Texas Instruments `bq27542` fuel gauge reports a compensated `capacity` (45%), whereas Waybar's `modules/battery.cpp` calculates `round(charge_now * 100.0 / charge_full)` (51%).
+  3. *Daemon vs Posture Coupling*: The rotation toggle checked `systemctl is-active rot8.service`. Because the daemon runs continuously to monitor accelerometers, it returned active even though the daemon deliberately locks orientation to landscape (`270`) in laptop mode.
+  4. *Layer-Shell Margin Scale*: Waybar logical height is 38. With Wayland scale 1.5, `38 * 1.5 = 57px`. The Control Center was configured with `margin-top: 40` (60px), leaving a 3-physical-pixel gap (Y=57..59).
+- **Resolution**:
+  1. Use `bufsize=1` and an explicit `while self.running: line = proc.stdout.readline()` loop for zero-latency event streaming.
+  2. Synchronize battery parsing to compute `int(round(charge_now * 100.0 / charge_full))` matching Waybar's exact algorithm.
+  3. In `yogabook-autorotate`, export runtime posture (`mode=laptop` vs `mode=tablet`) to `/run/user/$UID/yogabook-rotation.state`. The Control Center tile displays "Bloccata (Laptop)" when locked and highlights "Attiva (Tablet)" only when auto-rotation is physically enabled.
+  4. Adjust Layer-Shell `margin-top` to 38, making the panel flush against Waybar.
+- **Prevention Pattern**:
+  Always use unbuffered line reading (`readline()` with `bufsize=1`) when piping IPC monitoring streams in Python. Always inspect the exact sysfs computation algorithm of parent status bars to prevent widget metric discrepancies.
+
+
 

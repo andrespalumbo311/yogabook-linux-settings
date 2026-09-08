@@ -261,15 +261,25 @@ def get_current_brightness():
 
 
 def get_battery_info():
-    """Query battery percentage and charging status from sysfs."""
+    """Query battery percentage and charging status from sysfs matching Waybar formula."""
     try:
         cap = 50
         status = "Discharging"
-        if os.path.exists("/sys/class/power_supply/bq27542-0/capacity"):
-            with open("/sys/class/power_supply/bq27542-0/capacity") as f:
-                cap = int(f.read().strip())
-            with open("/sys/class/power_supply/bq27542-0/status") as f:
-                status = f.read().strip()
+        bdir = "/sys/class/power_supply/bq27542-0"
+        if os.path.exists(bdir):
+            if os.path.exists(f"{bdir}/charge_now") and os.path.exists(f"{bdir}/charge_full"):
+                with open(f"{bdir}/charge_now") as f:
+                    cn = int(f.read().strip())
+                with open(f"{bdir}/charge_full") as f:
+                    cf = int(f.read().strip())
+                if cf > 0:
+                    cap = int(round(cn * 100.0 / cf))
+            elif os.path.exists(f"{bdir}/capacity"):
+                with open(f"{bdir}/capacity") as f:
+                    cap = int(f.read().strip())
+            if os.path.exists(f"{bdir}/status"):
+                with open(f"{bdir}/status") as f:
+                    status = f.read().strip()
         charging = status in ("Charging", "Full")
         return cap, charging
     except Exception:
@@ -292,15 +302,33 @@ def check_bt_active():
         return False
 
 
-def check_rot_active():
+def check_rot_status():
+    """Returns (is_active_bool, subtitle_text) aware of hardware posture lock."""
     try:
         out = subprocess.check_output(
             ["systemctl", "--user", "is-active", "rot8.service"],
             text=True, stderr=subprocess.DEVNULL
         ).strip()
-        return out == "active"
+        if out != "active":
+            return False, "Disattivata"
     except Exception:
-        return False
+        return False, "Disattivata"
+
+    state_file = f"/run/user/{os.getuid()}/yogabook-rotation.state"
+    mode = "laptop"
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f:
+                for line in f:
+                    if line.startswith("mode="):
+                        mode = line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+
+    if mode == "tablet":
+        return True, "Attiva (Tablet)"
+    else:
+        return False, "Bloccata (Laptop)"
 
 
 def check_dnd_active():
@@ -354,21 +382,25 @@ class QuickTile:
     def _on_clicked(self, btn):
         self.toggle_fn(self)
 
-    def update_ui(self, active):
+    def update_ui(self, active, custom_sub=None):
         self.is_active = active
         if active:
             self.button.add_css_class("active")
             self.icon_label.set_text(self.icon_active)
-            self.sub_label.set_text(self.sub_active)
+            self.sub_label.set_text(custom_sub if custom_sub else self.sub_active)
         else:
             self.button.remove_css_class("active")
             self.icon_label.set_text(self.icon_inactive)
-            self.sub_label.set_text(self.sub_inactive)
+            self.sub_label.set_text(custom_sub if custom_sub else self.sub_inactive)
 
     def refresh(self):
         if self.check_fn:
-            active = self.check_fn()
-            self.update_ui(active)
+            res = self.check_fn()
+            if isinstance(res, tuple):
+                active, custom_sub = res
+                self.update_ui(active, custom_sub=custom_sub)
+            else:
+                self.update_ui(res)
 
 
 class YogaBookControlCenter(Gtk.Window):
@@ -383,12 +415,12 @@ class YogaBookControlCenter(Gtk.Window):
         Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.ON_DEMAND)
         Gtk4LayerShell.set_exclusive_zone(self, -1)
 
-        # Fullscreen overlay starting exactly at the bottom of Waybar (Y=40)
+        # Fullscreen overlay starting exactly at the bottom of Waybar (Y=38)
         for edge in [Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM,
                      Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.RIGHT]:
             Gtk4LayerShell.set_anchor(self, edge, True)
 
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 40)
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 38)
 
         # Style provider
         style_provider = Gtk.CssProvider()
@@ -407,6 +439,17 @@ class YogaBookControlCenter(Gtk.Window):
         self.volume_debounce_timer = None
         self.brightness_debounce_timer = None
         self.is_muted = False
+
+        self.running = True
+        self.last_user_volume_time = 0.0
+        self.last_user_brightness_time = 0.0
+        self.poll_timer = None
+        self.poll_counter = 0
+
+        # Start background pactl subscribe thread for zero-latency audio event notifications
+        self.audio_sub_proc = None
+        self.audio_thread = threading.Thread(target=self._audio_monitor_thread, daemon=True)
+        self.audio_thread.start()
 
         # Main fullscreen wrapper box
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -542,7 +585,7 @@ class YogaBookControlCenter(Gtk.Window):
         self.tile_rot = QuickTile(
             icon_active="󰑌", icon_inactive="󰑌",
             title="Rotazione", sub_active="Automatica", sub_inactive="Bloccata",
-            check_fn=check_rot_active, toggle_fn=self.toggle_rot
+            check_fn=check_rot_status, toggle_fn=self.toggle_rot
         )
         grid.attach(self.tile_rot.button, 1, 1, 1, 1)
 
@@ -603,6 +646,7 @@ class YogaBookControlCenter(Gtk.Window):
     def on_volume_value_changed(self, scale):
         if self.syncing_volume:
             return
+        self.last_user_volume_time = time.time()
         val = int(scale.get_value())
         self.vol_label.set_text(f"{val}%")
         self._update_volume_icon(val, self.is_muted)
@@ -654,6 +698,7 @@ class YogaBookControlCenter(Gtk.Window):
     def on_brightness_value_changed(self, scale):
         if self.syncing_brightness:
             return
+        self.last_user_brightness_time = time.time()
         val = max(1, int(scale.get_value()))
         self.bright_label.set_text(f"{val}%")
         self._update_brightness_icon(val)
@@ -709,11 +754,17 @@ class YogaBookControlCenter(Gtk.Window):
 
     def toggle_rot(self, tile):
         def _task():
-            active = check_rot_active()
-            action = "stop" if active else "start"
-            subprocess.run(["systemctl", "--user", action, "rot8.service"])
-            time.sleep(0.1)
-            GLib.idle_add(lambda: tile.update_ui(check_rot_active()))
+            try:
+                out = subprocess.check_output(
+                    ["systemctl", "--user", "is-active", "rot8.service"],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                action = "stop" if out == "active" else "start"
+                subprocess.run(["systemctl", "--user", action, "rot8.service"])
+                time.sleep(0.15)
+            except Exception:
+                pass
+            GLib.idle_add(tile.refresh)
 
         threading.Thread(target=_task, daemon=True).start()
 
@@ -738,6 +789,67 @@ class YogaBookControlCenter(Gtk.Window):
 
         threading.Thread(target=_task, daemon=True).start()
 
+    # --- Live dynamic monitoring ---
+    def _audio_monitor_thread(self):
+        while self.running:
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    ["pactl", "subscribe"],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    bufsize=1
+                )
+                self.audio_sub_proc = proc
+                while self.running:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    if "sink" in line:
+                        if (self.is_open and not self.syncing_volume and 
+                            self.pending_volume is None and 
+                            time.time() - self.last_user_volume_time >= 0.35):
+                            vol, muted = get_current_volume()
+                            GLib.idle_add(self._sync_volume_ui, vol, muted)
+            except Exception:
+                time.sleep(1)
+            finally:
+                if proc and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+
+    def _on_open_poll(self):
+        if not self.is_open:
+            self.poll_timer = None
+            return False
+
+        # Live brightness sync from sysfs
+        if not self.syncing_brightness and self.pending_brightness is None and time.time() - self.last_user_brightness_time >= 0.35:
+            curr_b = get_current_brightness()
+            if int(self.bright_scale.get_value()) != curr_b:
+                self._sync_brightness_ui(curr_b)
+
+        # Live posture / rotation status sync
+        self.tile_rot.refresh()
+
+        # Audio check every 4 ticks (~1s) as safe fallback
+        if self.poll_counter % 4 == 0:
+            if not self.syncing_volume and self.pending_volume is None and time.time() - self.last_user_volume_time >= 0.35:
+                vol, muted = get_current_volume()
+                if int(self.vol_scale.get_value()) != vol or self.is_muted != muted:
+                    self._sync_volume_ui(vol, muted)
+
+        # Battery check every 8 ticks (~2s)
+        self.poll_counter = (self.poll_counter + 1) % 8
+        if self.poll_counter == 0:
+            cap, charging = get_battery_info()
+            icon = "󰂄" if charging else ("󰁹" if cap > 90 else ("󰂀" if cap > 60 else ("󰁾" if cap > 30 else "󰁻")))
+            self.battery_label.set_text(f"{icon} {cap}%")
+
+        return True
+
     # --- Refresh all states ---
     def refresh_all_states(self):
         # Battery
@@ -761,14 +873,23 @@ class YogaBookControlCenter(Gtk.Window):
     def show_control_center(self):
         self.is_open = True
         self.refresh_all_states()
+        if self.poll_timer is None:
+            self.poll_timer = GLib.timeout_add(250, self._on_open_poll)
         self.set_visible(True)
         self.present()
 
     def hide_control_center(self):
         self.is_open = False
+        if self.poll_timer is not None:
+            GLib.source_remove(self.poll_timer)
+            self.poll_timer = None
         self.set_visible(False)
 
     def on_toggle_signal(self):
+        now = time.time()
+        if now - getattr(self, "_last_toggle_time", 0.0) < 0.2:
+            return GLib.SOURCE_CONTINUE
+        self._last_toggle_time = now
         print(f"[CC] TOGGLE SIGNAL RECEIVED. Currently is_open={self.is_open}", flush=True)
         if self.is_open:
             self.hide_control_center()
@@ -777,6 +898,15 @@ class YogaBookControlCenter(Gtk.Window):
         return GLib.SOURCE_CONTINUE
 
     def on_quit_signal(self):
+        self.running = False
+        if self.poll_timer is not None:
+            GLib.source_remove(self.poll_timer)
+            self.poll_timer = None
+        if self.audio_sub_proc and self.audio_sub_proc.poll() is None:
+            try:
+                self.audio_sub_proc.terminate()
+            except Exception:
+                pass
         cleanup()
         self.loop.quit()
         return False

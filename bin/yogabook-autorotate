@@ -47,13 +47,26 @@ logging.basicConfig(
 
 DISPLAY = "DSI-1"
 DEFAULT_TRANSFORM = "270"
+STATE_FILE = f"/run/user/{os.getuid()}/yogabook-rotation.state"
 
 screen_dev = None
 base_dev = None
 current_mode = "laptop"
 
+def write_state(mode, transform="270"):
+    try:
+        with open(STATE_FILE, "w") as f:
+            f.write(f"mode={mode}\ntransform={transform}\n")
+    except Exception:
+        pass
+
 def cleanup(*args):
     logging.info("Shutting down yogabook-autorotate...")
+    try:
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
+    except Exception:
+        pass
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, cleanup)
@@ -285,10 +298,14 @@ def main():
         if s:
             target_tr = tracker.update(s)
             apply_transform(target_tr)
+            write_state("tablet", target_tr)
+        else:
+            write_state("tablet", DEFAULT_TRANSFORM)
     else:
         logging.info(f"Initial posture: LAPTOP (~{initial_opening:.1f}°). Locking orientation to {DEFAULT_TRANSFORM}.")
         tracker.set_forced(DEFAULT_TRANSFORM)
         apply_transform(DEFAULT_TRANSFORM)
+        write_state("laptop", DEFAULT_TRANSFORM)
 
     mode_debounce_target = None
     mode_debounce_count = 0
@@ -316,11 +333,13 @@ def main():
                             current_mode = "tablet"
                             target_tr = tracker.update(s)
                             apply_transform(target_tr)
+                            write_state("tablet", target_tr)
                         else:
                             logging.info(f"Transition: TABLET/FLAT -> LAPTOP (~{opening:.1f}°). Locking orientation to {DEFAULT_TRANSFORM}.")
                             current_mode = "laptop"
                             tracker.set_forced(DEFAULT_TRANSFORM)
                             apply_transform(DEFAULT_TRANSFORM)
+                            write_state("laptop", DEFAULT_TRANSFORM)
                             subprocess.run(["pkill", "-SIGUSR1", "-x", "wvkbd"], check=False)
 
                         mode_debounce_target = None
@@ -338,6 +357,7 @@ def main():
                 target_tr = tracker.update(s)
                 if target_tr != prev_tr:
                     apply_transform(target_tr)
+                    write_state("tablet", target_tr)
 
         except Exception as e:
             logging.error(f"Error in main loop: {e}")

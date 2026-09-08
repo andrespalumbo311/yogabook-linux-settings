@@ -103,7 +103,9 @@
         "format-charging": "󰂄 {capacity}%",
         "format-plugged": "󰚥 {capacity}%",
         "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
-        "tooltip-format": "{timeTo}, salute {health}%",
+        "tooltip-format": "{timeTo}\nConsumo: {power:.2f}W\nSalute: {health}%",
+        "tooltip-format-charging": "{timeTo}\nCarica: {power:.2f}W\nSalute: {health}%",
+        "tooltip-format-plugged": "Alimentatore collegato\nSalute: {health}%",
         "on-click": "/home/andres/.local/bin/toggle-control-center"
     },
     "tray": {
