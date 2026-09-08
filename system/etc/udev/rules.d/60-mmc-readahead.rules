@@ -1,0 +1,2 @@
+# Increase readahead on eMMC storage to accelerate ELF binary and shared library cold loads
+ACTION=="add|change", KERNEL=="mmcblk[0-9]", ATTR{queue/read_ahead_kb}="1024"

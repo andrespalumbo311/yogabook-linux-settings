@@ -255,3 +255,29 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   Never rely on window manager / compositor `exec-once` directives for foundational system D-Bus agents (Polkit, keyring, notifications). Manage critical background daemons via supervised user systemd units hooked to the graphical session target to ensure persistence, restartability, and clean lifecycle management.
 
+---
+
+## 13. Legacy GPU Pipeline Fallbacks & Portal Latency on Low-Power SoCs
+
+- **Date**: 2026-09-08
+- **Subsystem**: Graphics Subsystem / Wayland Portals / App Runtime (`GTK4`, `Chromium`, `Mesa`, `xdg-desktop-portal`)
+- **Symptoms**:
+  - Launching standard graphical applications (Pamac App Store, Chromium, Nautilus, Zenity) feels noticeably sluggish, taking 5–8 seconds to map their initial window.
+  - Console and journal logs exhibit:
+    - Mesa HasVK Vulkan driver warnings (`anv_device: GTT size larger than 2 GiB`, `DRM modifiers`).
+    - Chromium GPU process conflict: `'--ozone-platform=wayland' is not compatible with Vulkan`.
+    - D-Bus Inhibit portal errors: `GDBus.Error.InvalidArgs: No such interface org.freedesktop.portal.Inhibit`.
+    - Tracker 3 / LocalSearch indexer background disk crawling and missing `XDG_SESSION_CLASS=user` activation failures.
+- **Root Cause**:
+  1. *Experimental Vulkan Default*: Modern GUI toolkits (GTK 4.20+, Chromium) now default to Vulkan rendering if any Vulkan driver is present on the system. On Intel Gen8 Cherryview (Cherry Trail Atom x5-Z8550), Mesa provides only the legacy, unmaintained `vulkan_hasvk` driver. This driver lacks complete Wayland surface extensions, triggering JIT shader recompilation overhead on CPU, buffer negotiation errors, or GPU process crash-and-fallback cascades.
+  2. *Portal Interface Rejection Delay*: When `portals.conf` maps an interface (like `Inhibit`) to `none`, `xdg-desktop-portal` rejects application queries with `InvalidArgs`, creating synchronous D-Bus roundtrip stalls during window realization.
+  3. *Unconstrained Background File Indexing*: Tracker 3 / LocalSearch configured to recursively index `$HOME` on flash eMMC severely saturates random I/O queues and starves Atom in-order CPU cores during application startup.
+- **Resolution**:
+  1. Force mature OpenGL rendering for all GTK4 applications by setting `GSK_RENDERER=gl` in `~/.config/environment.d/10-performance.conf`.
+  2. In `~/.config/chromium-flags.conf`, explicitly set `--ozone-platform=wayland` and disable Vulkan (`--disable-features=Vulkan`) alongside `--enable-gpu-rasterization` and `--enable-zero-copy`.
+  3. Correct portal routing in `config/xdg-desktop-portal/mango-portals.conf` to map `Inhibit=gtk` instead of `none`.
+  4. Restrict Tracker recursive indexing (`index-recursive-directories "[]"` and `fts-enabled false`).
+  5. Provide system udev rule (`60-mmc-readahead.rules`) increasing eMMC block device readahead to 1024KB.
+- **Prevention Pattern**:
+  On legacy low-power SoCs with partial or experimental Vulkan support (e.g. Intel Gen7/Gen8, early Mali), never allow toolkits to default to Vulkan. Always lock the graphical stack to mature OpenGL drivers with persistent on-disk shader caching, and sanitize portal definitions to eliminate D-Bus roundtrip delays.
+

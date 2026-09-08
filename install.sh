@@ -62,6 +62,9 @@ link_file "$REPO_DIR/config/gtk-3.0/settings.ini" "$HOME_DIR/.config/gtk-3.0/set
 link_file "$REPO_DIR/config/gtk-4.0/settings.ini" "$HOME_DIR/.config/gtk-4.0/settings.ini"
 link_file "$REPO_DIR/config/yogabook/display.json" "$HOME_DIR/.config/yogabook/display.json"
 link_file "$REPO_DIR/config/applications/yogabook-settings.desktop" "$HOME_DIR/.local/share/applications/yogabook-settings.desktop"
+link_file "$REPO_DIR/config/environment.d/10-performance.conf" "$HOME_DIR/.config/environment.d/10-performance.conf"
+link_file "$REPO_DIR/config/xdg-desktop-portal/mango-portals.conf" "$HOME_DIR/.config/xdg-desktop-portal/mango-portals.conf"
+link_file "$REPO_DIR/config/chromium-flags.conf" "$HOME_DIR/.config/chromium-flags.conf"
 
 # 3. GTK Touch Stack (Waybar, SwayNC, Wofi)
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config.jsonc"
@@ -103,6 +106,10 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" /etc/systemd/system/bluetooth-default-off.service
         sudo systemctl enable bluetooth-default-off.service || true
+    fi
+    if [ -f "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" /etc/udev/rules.d/60-mmc-readahead.rules
+        sudo udevadm control --reload-rules && sudo udevadm trigger || true
     fi
     sudo sysctl --system >/dev/null || true
     sudo systemctl daemon-reload || true
