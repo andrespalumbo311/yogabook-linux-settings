@@ -11,7 +11,8 @@ mtime_ms=$((mtime * 1000))
 diff=$((now - mtime_ms))
 
 if [ ! -f "$cache" ] || [ "$diff" -gt 300 ]; then
-    mmsg get all-tags 2>/dev/null > "$cache.tmp" && mv "$cache.tmp" "$cache"
+    tmp="/tmp/mango_tags.$$.tmp"
+    mmsg get all-tags 2>/dev/null > "$tmp" && mv -f "$tmp" "$cache" 2>/dev/null
 fi
 
 awk -v target="$target" -F'[{}]' '
