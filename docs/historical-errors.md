@@ -233,3 +233,25 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   When deploying devices with physical US keyboards in multilingual environments, explicitly declare `us` with `intl` variant in compositor configuration rather than relying on unconfigured default US layouts.
 
+---
+
+## 12. Unsupervised Polkit Authentication Agent in Minimal Compositor Sessions
+
+- **Date**: 2026-09-08
+- **Subsystem**: Privilege Elevation / Security / D-Bus Authentication (`polkit`, `polkit-gnome`, `pamac`)
+- **Symptoms**:
+  - Graphical package managers (like Pamac / App Store) or privilege-escalating GUI tools fail to show the root password prompt when performing administrative actions (e.g. installing, removing, or updating packages).
+  - CLI check `pkcheck --action-id ... --allow-user-interaction` returns error:
+    ```text
+    Authorization requires authentication but no agent is available.
+    ```
+- **Root Cause**:
+  1. Desktop shell transitions: Monolithic desktop environments (GNOME, KDE, DMS) often provide integrated Polkit authentication agents directly in their shell processes. When transitioning to lightweight standalone modular components (Waybar, SwayNC), the integrated agent is lost.
+  2. Incomplete Compositor Cold Boot Directives: Relying on compositor configuration directives (`exec-once`) to spawn authentication agents fails during live migrations because compositors only execute `exec-once` at cold start and ignore them during config reloads (`reload_config`). Furthermore, `exec-once` provides no supervisor process monitoring or auto-restart upon crash.
+- **Resolution**:
+  1. Wrap the standalone authentication agent (`/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1`) in a supervised systemd user unit (`polkit-gnome.service`) bound to `mango-session.target`.
+  2. Enable automatic restart on failure (`Restart=on-failure`, `RestartSec=1`).
+  3. Symlink and register the unit in `install.sh` and enable it under `mango-session.target.wants/`.
+- **Prevention Pattern**:
+  Never rely on window manager / compositor `exec-once` directives for foundational system D-Bus agents (Polkit, keyring, notifications). Manage critical background daemons via supervised user systemd units hooked to the graphical session target to ensure persistence, restartability, and clean lifecycle management.
+

@@ -80,6 +80,7 @@ link_file "$REPO_DIR/config/systemd/user/waybar.service" "$HOME_DIR/.config/syst
 link_file "$REPO_DIR/config/systemd/user/swaync.service" "$HOME_DIR/.config/systemd/user/swaync.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.config/systemd/user/yogabook-launcher.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-control-center.service" "$HOME_DIR/.config/systemd/user/yogabook-control-center.service"
+link_file "$REPO_DIR/config/systemd/user/polkit-gnome.service" "$HOME_DIR/.config/systemd/user/polkit-gnome.service"
 
 # 5. Setup Report
 link_file "$REPO_DIR/YOGABOOK_SETUP_REPORT.md" "$HOME_DIR/YOGABOOK_SETUP_REPORT.md"
