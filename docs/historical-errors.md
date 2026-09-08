@@ -209,3 +209,27 @@ This document records architectural, packaging, and runtime issues encountered o
   4. Use `app.run([])` for standalone desktop tool utilities to guarantee direct `activate` signal emission.
 - **Prevention Pattern**:
   Never assume Wayland video outputs exist persistently when cables are unplugged; always query DRM sysfs connector state before dispatching `wlr-randr` output rules. Always sanitize strings passed to GTK4/Libadwaita text setters to prevent Pango markup parser crashes.
+
+---
+
+## 11. Physical US Keyboard Accented Character Composition via XKB Dead Keys
+
+- **Date**: 2026-09-08
+- **Subsystem**: Input Subsystem / XKB Keymap / Wayland Compositor (`MangoWC`, `libxkbcommon`, `Halo Keyboard`)
+- **Symptoms**:
+  - Typing an accent (such as `'` or `` ` ``) followed by a vowel on the physical Halo Keyboard (US layout) outputs raw characters sequentially (e.g. `'e`, `` `a ``) rather than composed accented glyphs (`é`, `à`).
+  - Users typing Italian, French, Spanish, or Portuguese text cannot produce accented vowels naturally without switching physical layouts.
+- **Root Cause**:
+  In minimalist Wayland compositors (such as MangoWC), omitting explicit `xkb_rules_layout` and `xkb_rules_variant` defaults to standard `English (US)` (`us` without variant). In standard US XKB rules, apostrophe (`KEY_APOSTROPHE`) and grave (`KEY_GRAVE`) are ordinary printable characters with no dead-key composition rules.
+- **Resolution**:
+  1. Set `xkb_rules_layout=us` and `xkb_rules_variant=intl` in `config/mango/config.conf`.
+  2. Reload compositor configuration live via `WAYLAND_DISPLAY=wayland-0 mmsg dispatch reload_config`.
+  3. With `us(intl)`, the dead key combinations operate across all inputs:
+     - `'` + `e` $\rightarrow$ `é`
+     - `` ` `` + `e` $\rightarrow$ `è`
+     - `~` + `n` $\rightarrow$ `ñ`
+     - `'` + `c` $\rightarrow$ `ç`
+     - `'` + `Space` $\rightarrow$ `'`
+- **Prevention Pattern**:
+  When deploying devices with physical US keyboards in multilingual environments, explicitly declare `us` with `intl` variant in compositor configuration rather than relying on unconfigured default US layouts.
+
