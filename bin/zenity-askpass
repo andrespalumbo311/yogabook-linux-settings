@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Graphical password prompt helper for sudo / scripts
+zenity --password --title="Autenticazione Richiesta" --text="Inserisci la password di amministratore (sudo):" 2>/dev/null

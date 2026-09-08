@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# xdg-user-dir user-level fallback & wrapper
+# Returns the configured XDG directory for minimal environments
+# ==============================================================================
+
+if [ -x "/usr/bin/xdg-user-dir" ]; then
+    exec /usr/bin/xdg-user-dir "$@"
+fi
+
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/user-dirs.dirs"
+DIR_KEY="$1"
+
+if [ -z "$DIR_KEY" ]; then
+    echo "Usage: xdg-user-dir <DIRECTORY_TYPE>" >&2
+    exit 1
+fi
+
+if [ -f "$CONFIG_FILE" ]; then
+    line=$(grep -E "^XDG_${DIR_KEY}_DIR=" "$CONFIG_FILE" 2>/dev/null | head -n 1)
+    if [ -n "$line" ]; then
+        val="${line#*=}"
+        val="${val%\"}"
+        val="${val#\"}"
+        val="${val/\$HOME/$HOME}"
+        echo "$val"
+        exit 0
+    fi
+fi
+
+case "$DIR_KEY" in
+    DOCUMENTS)   echo "$HOME/Documents" ;;
+    DOWNLOAD)    echo "$HOME/Downloads" ;;
+    PICTURES)    echo "$HOME/Pictures" ;;
+    MUSIC)       echo "$HOME/Music" ;;
+    VIDEOS)      echo "$HOME/Videos" ;;
+    DESKTOP)     echo "$HOME/Desktop" ;;
+    TEMPLATES)   echo "$HOME/Templates" ;;
+    PUBLICSHARE) echo "$HOME/Public" ;;
+    *)           echo "$HOME" ;;
+esac

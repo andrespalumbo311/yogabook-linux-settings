@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Deterministic toggle for native touch app launcher (Yoga Book)
+PIDFILE="/tmp/yogabook-launcher.pid"
+
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+    rm -f "$PIDFILE"
+else
+    rm -f "$PIDFILE"
+    /home/andres/.local/bin/yogabook-launcher &
+    echo $! > "$PIDFILE"
+fi

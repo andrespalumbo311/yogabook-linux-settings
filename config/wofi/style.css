@@ -1,0 +1,69 @@
+/* ==============================================================================
+ * Wofi Style - Google Material Design 3 (Material You Light)
+ * ============================================================================== */
+
+window {
+    margin: 0px;
+    border: 1px solid #e0e2ec;
+    border-radius: 24px;
+    background-color: #fdfcff;
+    font-family: "JetBrainsMono Nerd Font", "Font Awesome 7 Free", sans-serif;
+    font-size: 13px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+}
+
+#input {
+    margin: 16px 16px 10px 16px;
+    padding: 12px 18px;
+    border: none;
+    border-radius: 20px;
+    color: #1f1f1f;
+    background-color: #f1f3f8;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+#inner-box {
+    margin: 6px 16px 16px 16px;
+    border: none;
+    background-color: transparent;
+}
+
+#outer-box {
+    margin: 0px;
+    border: none;
+    background-color: transparent;
+}
+
+#scroll {
+    margin: 0px;
+    border: none;
+}
+
+#text {
+    margin: 8px 12px;
+    border: none;
+    color: #1f1f1f;
+    font-weight: 600;
+}
+
+#img {
+    margin: 4px 8px;
+}
+
+#entry {
+    padding: 6px 10px;
+    margin: 2px 0;
+    border-radius: 16px;
+    background-color: transparent;
+    border: none;
+}
+
+#entry:selected {
+    background-color: #d3e3fd; /* Material You active container */
+}
+
+#entry:selected #text {
+    color: #041e49;
+    font-weight: 700;
+}

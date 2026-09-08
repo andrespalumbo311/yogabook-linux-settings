@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Close Active Window in MangoWC
+# Safely resolves active IPC socket even if parent environment holds stale socket
+# ==============================================================================
+
+if [ -z "${MANGO_INSTANCE_SIGNATURE:-}" ] || [ ! -S "$MANGO_INSTANCE_SIGNATURE" ]; then
+    SYSTEMD_SOCK="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^MANGO_INSTANCE_SIGNATURE=//p')"
+    if [ -n "$SYSTEMD_SOCK" ] && [ -S "$SYSTEMD_SOCK" ]; then
+        export MANGO_INSTANCE_SIGNATURE="$SYSTEMD_SOCK"
+    else
+        ACTIVE_SOCK="$(ls -t /run/user/"$(id -u)"/mango-*.sock 2>/dev/null | head -n1)"
+        if [ -n "$ACTIVE_SOCK" ] && [ -S "$ACTIVE_SOCK" ]; then
+            export MANGO_INSTANCE_SIGNATURE="$ACTIVE_SOCK"
+        fi
+    fi
+fi
+
+exec mmsg dispatch killclient

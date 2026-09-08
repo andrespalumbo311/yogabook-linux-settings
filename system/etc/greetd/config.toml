@@ -1,0 +1,7 @@
+[terminal]
+# The VT to run the greeter on.
+vt = 1
+
+[default_session]
+command = "tuigreet --time --remember --remember-user-session --cmd mango --asterisks"
+user = "greeter"

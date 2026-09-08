@@ -1,0 +1,137 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 38,
+    "spacing": 6,
+    "modules-left": [
+        "custom/launcher",
+        "group/workspaces"
+    ],
+    "modules-center": [
+        "clock"
+    ],
+    "modules-right": [
+        "custom/keyboard",
+        "network",
+        "battery",
+        "tray",
+        "custom/notification",
+        "custom/close"
+    ],
+    "custom/launcher": {
+        "format": "󰀻",
+        "tooltip": "Menu Applicazioni Touch",
+        "on-click": "/home/andres/.local/bin/toggle-launcher"
+    },
+    "group/workspaces": {
+        "orientation": "horizontal",
+        "modules": [
+            "custom/ws1",
+            "custom/ws2",
+            "custom/ws3",
+            "custom/ws4",
+            "custom/ws5",
+            "custom/ws6"
+        ]
+    },
+    "custom/ws1": {
+        "exec": "/home/andres/.local/bin/ws-status 1",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,1; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "custom/ws2": {
+        "exec": "/home/andres/.local/bin/ws-status 2",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,2; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "custom/ws3": {
+        "exec": "/home/andres/.local/bin/ws-status 3",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,3; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "custom/ws4": {
+        "exec": "/home/andres/.local/bin/ws-status 4",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,4; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "custom/ws5": {
+        "exec": "/home/andres/.local/bin/ws-status 5",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,5; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "custom/ws6": {
+        "exec": "/home/andres/.local/bin/ws-status 6",
+        "return-type": "json",
+        "interval": 1,
+        "signal": 1,
+        "on-click": "mmsg dispatch view,6; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+    },
+    "clock": {
+        "format": "{:%a %d %b  %H:%M}",
+        "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
+        "on-click": "swaync-client -t -sw"
+    },
+    "custom/keyboard": {
+        "format": "",
+        "tooltip": "Tastiera Virtuale (Mostra/Nascondi)",
+        "on-click": "/home/andres/.local/bin/toggle-keyboard"
+    },
+    "network": {
+        "format-wifi": "{icon}",
+        "format-ethernet": "󰈀",
+        "format-disconnected": "󰤭",
+        "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+        "tooltip-format": "{essid} ({signalStrength}%)",
+        "on-click": "swaync-client -t -sw"
+    },
+    "battery": {
+        "states": {
+            "warning": 30,
+            "critical": 15
+        },
+        "format": "{icon} {capacity}%",
+        "format-charging": "󰂄 {capacity}%",
+        "format-plugged": "󰚥 {capacity}%",
+        "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
+        "tooltip-format": "{timeTo}, salute {health}%"
+    },
+    "tray": {
+        "icon-size": 18,
+        "spacing": 8
+    },
+    "custom/notification": {
+        "tooltip": "Centro Notifiche e Controlli",
+        "format": "{icon}",
+        "format-icons": {
+            "notification": "󱅫",
+            "none": "󰂚",
+            "dnd-notification": "󱅫",
+            "dnd-none": "󰂛",
+            "inhibited-notification": "󱅫",
+            "inhibited-none": "󰂚",
+            "dnd-inhibited-notification": "󱅫",
+            "dnd-inhibited-none": "󰂛"
+        },
+        "return-type": "json",
+        "exec-if": "which swaync-client",
+        "exec": "swaync-client -swb",
+        "on-click": "swaync-client -t -sw",
+        "on-click-right": "swaync-client -d -sw",
+        "escape": true
+    },
+    "custom/close": {
+        "format": "",
+        "tooltip": "Chiudi finestra attiva",
+        "on-click": "/home/andres/.local/bin/close-window"
+    }
+}

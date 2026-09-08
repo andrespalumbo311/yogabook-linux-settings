@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""
+Native Material Design 3 Touch Application Drawer for Lenovo Yoga Book.
+Built with GTK 3 & GtkLayerShell for MangoWC / wlroots.
+Features:
+- Single tap to launch (reliable GTK clicked event)
+- Tap outside card to dismiss immediately
+- Instant toggle via toggle-launcher
+- Pure solid Material Design 3 Light styling
+- Instant search filter
+"""
+
+import sys
+import os
+import atexit
+import gi
+
+PIDFILE = "/tmp/yogabook-launcher.pid"
+
+def cleanup():
+    try:
+        if os.path.exists(PIDFILE):
+            os.remove(PIDFILE)
+    except OSError:
+        pass
+
+atexit.register(cleanup)
+
+gi.require_version('Gtk', '3.0')
+gi.require_version('GtkLayerShell', '0.1')
+from gi.repository import Gtk, Gdk, GtkLayerShell, Gio, GLib
+
+
+CSS = b"""
+* {
+    font-family: Roboto, "Noto Sans", "Cantarell", sans-serif;
+}
+
+window#launcher-overlay {
+    background-color: rgba(0, 0, 0, 0.45);
+}
+
+#drawer-card {
+    background-color: #ffffff;
+    border: 1px solid #dcdfe4;
+    border-radius: 28px;
+    padding: 24px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+    margin: 40px 80px;
+}
+
+#search-box {
+    background-color: #f0f3f8;
+    border: 1px solid #dcdfe4;
+    border-radius: 20px;
+    padding: 10px 16px;
+    font-size: 15px;
+    color: #1f1f1f;
+    margin-bottom: 18px;
+}
+
+#search-box:focus {
+    background-color: #ffffff;
+    border-color: #0b57d0;
+}
+
+#apps-scroll {
+    background-color: transparent;
+    border: none;
+}
+
+.app-button {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 16px;
+    padding: 12px 8px;
+    margin: 6px;
+    min-width: 96px;
+    color: #1f1f1f;
+    outline: none;
+}
+
+.app-button:hover,
+.app-button:focus,
+.app-button:active {
+    background-color: #e8eef8;
+    border-color: #c2d7f7;
+    color: #041e49;
+}
+
+.app-label {
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 6px;
+    color: #1f1f1f;
+}
+"""
+
+
+class AppItem:
+    def __init__(self, app_info):
+        self.app_info = app_info
+        self.name = app_info.get_display_name() or app_info.get_name() or ""
+        self.exec_line = app_info.get_executable() or ""
+        self.icon = app_info.get_icon()
+
+
+class YogaBookLauncher(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.set_name("launcher-overlay")
+
+        # LayerShell setup
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+
+        for edge in [GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM,
+                     GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT]:
+            GtkLayerShell.set_anchor(self, edge, True)
+
+        # Style provider
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        # Events for closing on outside tap
+        self.connect("button-press-event", self.on_backdrop_clicked)
+        self.connect("key-press-event", self.on_key_press)
+
+        # Main layout
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        main_box.set_halign(Gtk.Align.CENTER)
+        main_box.set_valign(Gtk.Align.CENTER)
+        self.add(main_box)
+
+        # Card container
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        card.set_name("drawer-card")
+        card.set_size_request(680, 520)
+        # Prevent clicks on the card itself from dismissing the window
+        card.connect("button-press-event", lambda w, e: True)
+        main_box.pack_start(card, True, True, 0)
+
+        # Search box
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_name("search-box")
+        self.search_entry.set_placeholder_text("Cerca applicazioni...")
+        self.search_entry.connect("search-changed", self.on_search_changed)
+        self.search_entry.connect("activate", self.on_search_activate)
+        card.pack_start(self.search_entry, False, False, 0)
+
+        # Scrolled window for apps
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_name("apps-scroll")
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_kinetic_scrolling(True)
+        scroll.set_overlay_scrolling(True)
+        card.pack_start(scroll, True, True, 0)
+
+        # FlowBox for apps
+        self.flowbox = Gtk.FlowBox()
+        self.flowbox.set_valign(Gtk.Align.START)
+        self.flowbox.set_max_children_per_line(6)
+        self.flowbox.set_min_children_per_line(4)
+        self.flowbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.flowbox.set_homogeneous(True)
+        scroll.add(self.flowbox)
+
+        self.app_items = []
+        self.load_applications()
+
+    def load_applications(self):
+        apps = Gio.AppInfo.get_all()
+        seen = set()
+        for app in sorted(apps, key=lambda a: (a.get_display_name() or "").lower()):
+            if not app.should_show():
+                continue
+            name = app.get_display_name() or app.get_name()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+
+            item = AppItem(app)
+            self.app_items.append(item)
+
+            btn = Gtk.Button()
+            btn.get_style_context().add_class("app-button")
+
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            box.set_halign(Gtk.Align.CENTER)
+
+            # Icon
+            icon = item.icon
+            img = Gtk.Image.new_from_gicon(icon, Gtk.IconSize.DIALOG) if icon else Gtk.Image.new_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
+            img.set_pixel_size(48)
+            box.pack_start(img, False, False, 0)
+
+            # Label
+            lbl = Gtk.Label(label=name)
+            lbl.get_style_context().add_class("app-label")
+            lbl.set_max_width_chars(11)
+            lbl.set_ellipsize(3) # PANGO_ELLIPSIZE_END
+            box.pack_start(lbl, False, False, 0)
+
+            btn.add(box)
+            # Reliable single tap on touch screen
+            btn.connect("clicked", self.on_app_clicked, item)
+
+            child = Gtk.FlowBoxChild()
+            child.add(btn)
+            child.item = item
+            child.btn = btn
+            self.flowbox.add(child)
+
+    def on_search_changed(self, entry):
+        query = entry.get_text().strip().lower()
+        for child in self.flowbox.get_children():
+            name = child.item.name.lower()
+            child.set_visible(query in name)
+
+    def on_search_activate(self, entry):
+        for child in self.flowbox.get_children():
+            if child.get_visible():
+                self.launch_app(child.item)
+                return
+
+    def on_app_clicked(self, btn, item):
+        self.launch_app(item)
+
+    def launch_app(self, item):
+        try:
+            item.app_info.launch([], None)
+        except Exception as e:
+            cmd = item.app_info.get_commandline()
+            if cmd:
+                os.system(f"{cmd} &")
+        Gtk.main_quit()
+
+    def on_backdrop_clicked(self, widget, event):
+        # If click/tap is outside the central card, exit immediately
+        Gtk.main_quit()
+        return True
+
+    def on_key_press(self, widget, event):
+        if event.keyval == Gdk.KEY_Escape:
+            Gtk.main_quit()
+            return True
+        return False
+
+
+def main():
+    app = YogaBookLauncher()
+    app.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

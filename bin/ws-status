@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# High-performance, dynamic workspace status provider for Waybar on MangoWC
+# Shows all occupied workspaces, the active workspace, plus one empty workspace.
+target="${1:-1}"
+cache="/tmp/mango_tags.cache"
+
+# Shared cache refreshed if older than 0.2s
+now=$(date +%s%3N 2>/dev/null || date +%s)
+mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
+mtime_ms=$((mtime * 1000))
+diff=$((now - mtime_ms))
+
+if [ ! -f "$cache" ] || [ "$diff" -gt 300 ]; then
+    mmsg get all-tags 2>/dev/null > "$cache.tmp" && mv "$cache.tmp" "$cache"
+fi
+
+awk -v target="$target" -F'[{}]' '
+{
+    active = 0
+    max_used = 1
+    split("", occupied)
+    for (i = 1; i <= NF; i++) {
+        if ($i ~ /"index":/) {
+            idx = 0; act = 0; cnt = 0
+            if (match($i, /"index":([0-9]+)/, m)) idx = m[1]
+            if ($i ~ /"is_active":true/) act = 1
+            if (match($i, /"client_count":([0-9]+)/, m)) cnt = m[1]
+            
+            if (act) active = idx
+            if (cnt > 0) {
+                occupied[idx] = 1
+                if (idx > max_used) max_used = idx
+            }
+        }
+    }
+    if (active > max_used) max_used = active
+    next_empty = max_used + 1
+
+    is_active = (target == active)
+    is_occ = (target in occupied)
+    is_empty = (!is_occ && !is_active && target <= next_empty)
+
+    if (is_active) {
+        printf "{\"text\": \"%d\", \"class\": \"active\", \"tooltip\": \"Workspace %d (Attivo)\"}\n", target, target
+    } else if (is_occ) {
+        printf "{\"text\": \"%d\", \"class\": \"occupied\", \"tooltip\": \"Workspace %d (Con finestre)\"}\n", target, target
+    } else if (is_empty) {
+        printf "{\"text\": \"%d\", \"class\": \"empty\", \"tooltip\": \"Workspace %d (Nuovo/Vuoto)\"}\n", target, target
+    } else {
+        printf "{\"text\": \"\", \"class\": \"hidden\"}\n"
+    }
+}' "$cache"

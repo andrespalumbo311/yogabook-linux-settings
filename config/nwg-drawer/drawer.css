@@ -1,0 +1,84 @@
+/* ==============================================================================
+ * nwg-drawer - Google Material Design 3 (Material You Light)
+ * Tuned for Touchscreen on Lenovo Yoga Book
+ * ============================================================================== */
+
+window {
+    background-color: #ffffff;
+    color: #1f1f1f;
+    font-family: "JetBrainsMono Nerd Font", sans-serif;
+    font-size: 13px;
+}
+
+/* Material You Search Bar */
+entry {
+    background-color: #f1f3f8;
+    border: 1px solid #e0e2ec;
+    border-radius: 24px;
+    color: #1f1f1f;
+    padding: 12px 20px;
+    margin: 16px 24px 10px 24px;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+entry:focus {
+    border: 2px solid #0b57d0;
+    background-color: #ffffff;
+}
+
+/* Category Filter Chips */
+#categories {
+    margin: 0px 24px 12px 24px;
+}
+
+#category-button {
+    background-color: #f1f3f8;
+    border: 1px solid #e0e2ec;
+    border-radius: 20px;
+    color: #1f1f1f;
+    padding: 6px 14px;
+    margin: 2px 4px;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+#category-button:hover,
+#category-button:focus {
+    background-color: #d3e3fd;
+    color: #041e49;
+    border-color: #a8c7fa;
+}
+
+/* App Grid Tiles */
+#app-grid {
+    margin: 8px 24px;
+}
+
+button {
+    background-color: #f8f9fa;
+    border: 1px solid #e8eaed;
+    border-radius: 18px;
+    color: #1f1f1f;
+    padding: 14px 8px;
+    margin: 6px;
+    font-weight: 600;
+    transition: all 0.15s ease;
+}
+
+button:hover,
+button:focus {
+    background-color: #d3e3fd;
+    border-color: #a8c7fa;
+    color: #041e49;
+    box-shadow: 0 4px 12px rgba(11, 87, 208, 0.15);
+}
+
+/* Pinned & Powerbar buttons */
+#pinned-box {
+    margin: 12px 24px;
+}
+
+#power-box {
+    margin: 12px 24px;
+}

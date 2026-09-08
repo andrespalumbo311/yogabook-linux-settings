@@ -1,0 +1,227 @@
+/* ==============================================================================
+ * Waybar Light Style - Modern Clean Touch Theme for Lenovo Yoga Book
+ * Google Material Design 3 Palette & Symmetrical Touch Targets
+ * ============================================================================== */
+
+* {
+    border: none;
+    border-radius: 0;
+    font-family: "JetBrainsMono Nerd Font Propo", "Symbols Nerd Font", "Font Awesome 7 Free", sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    min-height: 0;
+}
+
+window#waybar {
+    background-color: #ffffff;
+    border-bottom: 2px solid #e2e4ea;
+    color: #1f2937;
+}
+
+/* Base pill styling */
+#custom-launcher,
+#group-workspaces,
+#clock,
+#custom-keyboard,
+#custom-close,
+#battery,
+#network,
+#tray,
+#custom-notification {
+    background-color: #f3f4f8;
+    margin: 4px 2px;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    color: #1f2937;
+}
+
+/* Launcher Button */
+#custom-launcher {
+    font-size: 16px;
+    background-color: #0b57d0;
+    color: #ffffff;
+    padding: 2px 12px;
+    margin-left: 6px;
+    border: 1px solid #0b57d0;
+}
+#custom-launcher:hover {
+    background-color: #1a73e8;
+}
+
+/* Workspace Switcher Group & Dynamic Buttons */
+#group-workspaces {
+    padding: 1px 3px;
+    background-color: #f3f4f8;
+}
+
+#custom-ws1,
+#custom-ws2,
+#custom-ws3,
+#custom-ws4,
+#custom-ws5,
+#custom-ws6 {
+    min-width: 24px;
+    padding: 2px 8px;
+    margin: 2px 2px;
+    border-radius: 6px;
+    font-weight: 700;
+    background-color: transparent;
+    border: 1px solid transparent;
+}
+
+#custom-ws1.active,
+#custom-ws2.active,
+#custom-ws3.active,
+#custom-ws4.active,
+#custom-ws5.active,
+#custom-ws6.active {
+    background-color: #0b57d0;
+    color: #ffffff;
+    border: 1px solid #0b57d0;
+}
+
+#custom-ws1.occupied,
+#custom-ws2.occupied,
+#custom-ws3.occupied,
+#custom-ws4.occupied,
+#custom-ws5.occupied,
+#custom-ws6.occupied {
+    background-color: #ffffff;
+    color: #1f2937;
+    border: 1px solid #c7cddb;
+}
+
+#custom-ws1.empty,
+#custom-ws2.empty,
+#custom-ws3.empty,
+#custom-ws4.empty,
+#custom-ws5.empty,
+#custom-ws6.empty {
+    background-color: #ffffff;
+    color: #5f6368;
+    border: 1px dashed #b0b7c3;
+}
+
+#custom-ws1.hidden,
+#custom-ws2.hidden,
+#custom-ws3.hidden,
+#custom-ws4.hidden,
+#custom-ws5.hidden,
+#custom-ws6.hidden {
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    border: none;
+    background-color: transparent;
+}
+
+/* Center Clock */
+#clock {
+    color: #1f2937;
+    font-weight: 700;
+    padding: 2px 16px;
+}
+#clock:hover {
+    background-color: #e5e7eb;
+}
+
+/* Virtual Keyboard Button (Symmetrically Centered) */
+#custom-keyboard {
+    background-color: #eff6ff;
+    color: #0b57d0;
+    font-size: 15px;
+    min-width: 38px;
+    padding: 2px 0;
+    border: 1px solid #bfdbfe;
+}
+#custom-keyboard:hover {
+    background-color: #0b57d0;
+    color: #ffffff;
+}
+#custom-keyboard label {
+    margin: 0;
+    padding: 0;
+}
+
+/* Wi-Fi Icon Only (Symmetrically Centered) */
+#network {
+    font-size: 15px;
+    color: #0b57d0;
+    min-width: 38px;
+    padding: 2px 0;
+}
+#network.disconnected {
+    color: #dc2626;
+}
+#network label {
+    margin: 0;
+    padding: 0;
+}
+
+/* Battery */
+#battery {
+    padding: 2px 10px;
+    color: #0b57d0;
+}
+#battery.charging {
+    color: #16a34a;
+}
+#battery.warning:not(.charging) {
+    color: #ea580c;
+}
+#battery.critical:not(.charging) {
+    color: #dc2626;
+    animation-name: blink;
+    animation-duration: 1s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+}
+
+/* System Tray */
+#tray {
+    padding: 2px 8px;
+    margin-right: 2px;
+}
+
+/* Notification & Control Center Bell (Symmetrically Centered) */
+#custom-notification {
+    font-size: 15px;
+    color: #ea580c;
+    min-width: 38px;
+    padding: 2px 0;
+}
+#custom-notification:hover {
+    background-color: #e5e7eb;
+}
+#custom-notification label {
+    margin: 0;
+    padding: 0;
+}
+
+/* Close Window Button (Top-Right Corner, Highlighted Red) */
+#custom-close {
+    background-color: #fef2f2;
+    color: #dc2626;
+    font-size: 15px;
+    font-weight: bold;
+    min-width: 38px;
+    padding: 2px 0;
+    margin-right: 6px;
+    border: 1px solid #fecaca;
+}
+#custom-close:hover {
+    background-color: #dc2626;
+    color: #ffffff;
+}
+#custom-close label {
+    margin: 0;
+    padding: 0;
+}
+
+@keyframes blink {
+    to {
+        background-color: #dc2626;
+        color: #ffffff;
+    }
+}

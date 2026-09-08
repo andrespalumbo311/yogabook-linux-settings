@@ -1,0 +1,12 @@
+show=drun
+prompt=🔍 Cerca applicazioni...
+width=620
+height=420
+location=center
+insensitive=true
+allow_images=true
+image_size=40
+lines=7
+layer=overlay
+gtk_dark=false
+filter_rate=100

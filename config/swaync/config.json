@@ -1,0 +1,85 @@
+{
+  "$schema": "/etc/xdg/swaync/configSchema.json",
+  "positionX": "right",
+  "positionY": "top",
+  "layer": "overlay",
+  "control-center-layer": "overlay",
+  "layer-shell": true,
+  "cssPriority": "user",
+  "control-center-margin-top": 46,
+  "control-center-margin-bottom": 12,
+  "control-center-margin-right": 12,
+  "control-center-margin-left": 0,
+  "notification-2fa-action": true,
+  "notification-inline-replies": true,
+  "notification-icon-size": 48,
+  "notification-body-image-height": 100,
+  "notification-body-image-width": 200,
+  "control-center-width": 420,
+  "control-center-height": 720,
+  "fit-to-screen": false,
+  "widgets": [
+    "title",
+    "dnd",
+    "volume",
+    "backlight",
+    "buttons-grid",
+    "mpris",
+    "notifications"
+  ],
+  "widget-config": {
+    "title": {
+      "text": "Centro di Controllo",
+      "clear-all-button": true,
+      "button-text": "Cancella tutto"
+    },
+    "dnd": {
+      "text": "Non Disturbare"
+    },
+    "volume": {
+      "label": "󰕾",
+      "show-per-app": false
+    },
+    "backlight": {
+      "label": "󰃠",
+      "device": "intel_backlight",
+      "min": 5
+    },
+    "mpris": {
+      "image-size": 64,
+      "image-radius": 12
+    },
+    "buttons-grid": {
+      "actions": [
+        {
+          "label": "󰤨  Wi-Fi",
+          "type": "toggle",
+          "active": true,
+          "command": "rfkill toggle wifi"
+        },
+        {
+          "label": "󰂯  Bluetooth",
+          "type": "toggle",
+          "active": false,
+          "command": "rfkill toggle bluetooth"
+        },
+        {
+          "label": "  Tastiera",
+          "command": "/home/andres/.local/bin/toggle-keyboard"
+        },
+        {
+          "label": "  Screenshot",
+          "command": "sh -c 'grim -g \"$(slurp)\" - | wl-copy && notify-send \"Screenshot\" \"Area copiata\"'"
+        },
+        {
+          "label": "󰤄  Sospendi",
+          "command": "systemctl suspend"
+        },
+        {
+          "label": "󰐥  Spegni",
+          "command": "systemctl poweroff"
+        }
+      ]
+    }
+  }
+}

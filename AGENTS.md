@@ -1,6 +1,6 @@
 # AGENTS.md – Guide & Architecture Reference for AI Coding Assistants
 
-Welcome, Agent. This repository contains the complete configuration, hardware workarounds, daemon scripts, and dotfiles for running **Arch Linux** on the **Lenovo Yoga Book 1st Gen (YB1-X91F / YB1-X90F series)** under **MangoWC** (lightweight wlroots Wayland compositor) and **DMS (Dank Material Shell)**.
+Welcome, Agent. This repository contains the complete configuration, hardware workarounds, daemon scripts, and dotfiles for running **Arch Linux** on the **Lenovo Yoga Book 1st Gen (YB1-X91F / YB1-X90F series)** under **MangoWC** (lightweight wlroots Wayland compositor) and the **GTK Touch Stack (Waybar, SwayNC, Wofi)**.
 
 This file serves as your primary context, architectural overview, and operational guidelines when maintaining, debugging, or extending this codebase.
 
@@ -33,21 +33,30 @@ yogabook-config/
 ├── bin/                           # User executables (symlinked to ~/.local/bin/)
 │   ├── yogabook-autorotate        # Smart posture & auto-rotation daemon (Python 3)
 │   ├── toggle-keyboard            # Instant toggle script for wvkbd virtual keyboard
+│   ├── close-window               # Safe IPC wrapper to close focused MangoWC window
 │   └── wvkbd                      # wvkbd-mobintl binary (compiled for minimal footprint)
 │
 ├── config/                        # User dotfiles (symlinked to ~/.config/)
 │   ├── mango/
-│   │   └── config.conf            # MangoWC compositor config (optimized GPU/CPU, Wacom mapping)
-│   ├── systemd/
-│   │   └── user/
-│   │       ├── rot8.service       # User systemd service for yogabook-autorotate
-│   │       └── wvkbd.service      # User systemd service for wvkbd (hidden background process)
-│   └── DankMaterialShell/         # DMS configurations and custom QML plugins
-│       ├── plugin_settings.json   # Active DMS plugin settings
-│       ├── plugins.lock.json      # DMS plugin lock state
-│       └── plugins/
-│           ├── VirtualKeyboard/   # Top-bar keyboard trigger widget
-│           └── CloseWindow/       # Top-bar window close widget (✕ button)
+│   │   ├── config.conf            # MangoWC compositor config (GPU/CPU optimized, Wacom mapping)
+│   │   ├── outputs.conf           # Display mode & 270° transform (scale 1.5)
+│   │   ├── cursor.conf            # Trackpad natural scrolling & cursor size
+│   │   └── binds.conf             # Keyboard, multimedia & touch gesture bindings
+│   ├── waybar/
+│   │   ├── config.jsonc           # Waybar top-bar (launcher, workspaces, clock, audio, battery, tray)
+│   │   └── style.css              # Touch-friendly Modern Light stylesheet
+│   ├── swaync/
+│   │   ├── config.json            # SwayNC control center (sliders for volume & backlight, toggles)
+│   │   └── style.css              # Touch control center Light stylesheet
+│   ├── wofi/
+│   │   ├── config                 # Wofi touch-friendly launcher settings (MD3)
+│   │   └── style.css              # Material Design 3 (Material You Light) stylesheet
+│   └── systemd/
+│       └── user/
+│           ├── rot8.service       # User systemd service for yogabook-autorotate
+│           ├── wvkbd.service      # User systemd service for wvkbd (hidden background process)
+│           ├── waybar.service     # User systemd service for Waybar
+│           └── swaync.service     # User systemd service for SwayNC
 │
 └── system/                        # System configurations and low-level fixes (/etc)
     ├── pamac_fix/                 # C source & Makefile for libalpm Landlock sandbox bypass
@@ -107,6 +116,8 @@ When working on this repository, you **MUST** follow these operating rules:
 
 2. **Reloading Services After Edits**:
    - **MangoWC**: `WAYLAND_DISPLAY=wayland-0 mmsg dispatch reload_config`
+   - **Waybar**: `killall -SIGUSR2 waybar` or `systemctl --user restart waybar.service`
+   - **SwayNC**: `swaync-client -R -rs` or `systemctl --user restart swaync.service`
    - **Rotation Daemon**: `systemctl --user restart rot8.service`
    - **Virtual Keyboard**: `systemctl --user restart wvkbd.service`
    - **Systemd User Units**: `systemctl --user daemon-reload`

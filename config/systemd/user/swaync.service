@@ -1,0 +1,16 @@
+[Unit]
+Description=Sway Notification Center
+PartOf=graphical-session.target
+After=graphical-session.target
+BusName=org.freedesktop.Notifications
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.Notifications
+ExecStart=/usr/bin/swaync
+ExecReload=/usr/bin/swaync-client --reload-config ; /usr/bin/swaync-client --reload-css
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=graphical-session.target
