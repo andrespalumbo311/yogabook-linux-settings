@@ -310,10 +310,27 @@ def main():
     mode_debounce_target = None
     mode_debounce_count = 0
     MODE_DEBOUNCE_THRESHOLD = 2  # 2 cycles (0.8s) to confirm mode transitions
+    last_hdmi_status = None
 
     while True:
         try:
             time.sleep(0.4)
+
+            # HDMI Hotplug monitor
+            try:
+                if os.path.exists("/sys/class/drm/card0-HDMI-A-1/status"):
+                    with open("/sys/class/drm/card0-HDMI-A-1/status", "r") as f_hdmi:
+                        current_hdmi = f_hdmi.read().strip()
+                else:
+                    current_hdmi = "disconnected"
+
+                if last_hdmi_status is not None and current_hdmi != last_hdmi_status:
+                    logging.info(f"HDMI hotplug transition detected: {last_hdmi_status} -> {current_hdmi}")
+                    subprocess.Popen(["yogabook-display-mgr", "apply"])
+                last_hdmi_status = current_hdmi
+            except Exception:
+                pass
+
             s = read_accel_raw(screen_dev)
             b = read_accel_raw(base_dev)
             if not s or not b:

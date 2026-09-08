@@ -43,6 +43,8 @@ link_file "$REPO_DIR/bin/yogabook-launcher"   "$HOME_DIR/.local/bin/yogabook-lau
 link_file "$REPO_DIR/bin/toggle-control-center" "$HOME_DIR/.local/bin/toggle-control-center"
 link_file "$REPO_DIR/bin/yogabook-control-center" "$HOME_DIR/.local/bin/yogabook-control-center"
 link_file "$REPO_DIR/bin/ws-status"           "$HOME_DIR/.local/bin/ws-status"
+link_file "$REPO_DIR/bin/yogabook-settings"    "$HOME_DIR/.local/bin/yogabook-settings"
+link_file "$REPO_DIR/bin/yogabook-display-mgr" "$HOME_DIR/.local/bin/yogabook-display-mgr"
 link_file "$REPO_DIR/bin/close-window"        "$HOME_DIR/.local/bin/close-window"
 link_file "$REPO_DIR/bin/zenity-askpass"      "$HOME_DIR/.local/bin/zenity-askpass"
 link_file "$REPO_DIR/bin/xdg-user-dir"        "$HOME_DIR/.local/bin/xdg-user-dir"
@@ -58,6 +60,8 @@ link_file "$REPO_DIR/config/mango/binds.conf"   "$HOME_DIR/.config/mango/binds.c
 link_file "$REPO_DIR/config/user-dirs.dirs"    "$HOME_DIR/.config/user-dirs.dirs"
 link_file "$REPO_DIR/config/gtk-3.0/settings.ini" "$HOME_DIR/.config/gtk-3.0/settings.ini"
 link_file "$REPO_DIR/config/gtk-4.0/settings.ini" "$HOME_DIR/.config/gtk-4.0/settings.ini"
+link_file "$REPO_DIR/config/yogabook/display.json" "$HOME_DIR/.config/yogabook/display.json"
+link_file "$REPO_DIR/config/applications/yogabook-settings.desktop" "$HOME_DIR/.local/share/applications/yogabook-settings.desktop"
 
 # 3. GTK Touch Stack (Waybar, SwayNC, Wofi)
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config.jsonc"

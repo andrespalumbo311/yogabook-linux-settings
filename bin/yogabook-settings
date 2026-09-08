@@ -1,0 +1,1053 @@
+#!/usr/bin/env python3
+"""
+Yoga Book Settings Application (GTK 4 / Libadwaita)
+Purpose-built native touch-friendly settings panel for Lenovo Yoga Book (YB1-X91F)
+under MangoWC (wlroots Wayland compositor).
+
+Sections:
+1. Schermo e HDMI (Display topologies, HDMI mirroring/extension/solo, scale, internal brightness, autorotate)
+2. Rete e Wi-Fi (iwd/systemd wireless configuration, status, scan)
+3. Bluetooth (BlueZ adapter toggle, paired devices, scan)
+4. Audio e Suono (PipeWire / WirePlumber sink & source sliders, pavucontrol launcher)
+5. Tastiera Halo e Input (Capacitive Halo backlight, wvkbd virtual keyboard, Wacom EMR digitizer)
+6. Batteria e Alimentazione (bq27542 fuel gauge metrics, health %, cycles, live wattage, s2idle)
+7. Aspetto e Info Sistema (Dark/Light mode switch, hardware & software specifications)
+"""
+
+import sys
+import os
+import re
+import json
+import warnings
+import subprocess
+import threading
+
+os.environ.setdefault("GSK_RENDERER", "gl")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib
+
+DISPLAY_CONFIG_PATH = os.path.expanduser("~/.config/yogabook/display.json")
+HDMI_STATUS_PATH = "/sys/class/drm/card0-HDMI-A-1/status"
+ROTATION_STATE_PATH = f"/run/user/{os.getuid()}/yogabook-rotation.state"
+GTK4_SETTINGS_PATH = os.path.expanduser("~/.config/gtk-4.0/settings.ini")
+GTK3_SETTINGS_PATH = os.path.expanduser("~/.config/gtk-3.0/settings.ini")
+
+
+class YogaBookSettingsApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.lenovo.yogabook.settings")
+        self.win = None
+        self.connect("activate", self.on_activate)
+
+    def on_activate(self, app):
+        if not self.win:
+            self.win = YogaBookSettingsWindow(self)
+        self.win.present()
+
+
+class YogaBookSettingsWindow(Adw.PreferencesWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_title("Impostazioni Yoga Book")
+        self.set_default_size(840, 580)
+        self.set_search_enabled(True)
+
+        # Sync guards to prevent feedback loops on sliders during initialization
+        self.syncing_display = True
+        self.syncing_audio = True
+        self.syncing_halo = True
+
+        # Build pages
+        self._build_display_page()
+        self._build_wifi_page()
+        self._build_bluetooth_page()
+        self._build_audio_page()
+        self._build_halo_input_page()
+        self._build_battery_page()
+        self._build_system_page()
+
+        # Unlock sync guards
+        self.syncing_display = False
+        self.syncing_audio = False
+        self.syncing_halo = False
+
+        # Asynchronously populate dynamic lists after window presentation
+        GLib.idle_add(self._async_initial_load)
+
+    def _async_initial_load(self):
+        self._refresh_hdmi_status()
+        self._refresh_rotation_state()
+        self._refresh_active_wifi()
+        self._populate_available_networks()
+        self._refresh_bluetooth_devices()
+        self._refresh_battery_metrics()
+        return GLib.SOURCE_REMOVE
+
+    # =========================================================================
+    # 1. DISPLAY & HDMI PAGE
+    # =========================================================================
+    def _build_display_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Schermo e HDMI")
+        page.set_icon_name("video-display-symbolic")
+
+        # --- Group A: External Display (Micro-HDMI) ---
+        group_hdmi = Adw.PreferencesGroup()
+        group_hdmi.set_title("Uscita Video Esterna (Micro-HDMI)")
+        group_hdmi.set_description("Configura il comportamento del sistema quando viene connesso un monitor o proiettore.")
+
+        # Row 1: HDMI Status
+        self.row_hdmi_status = Adw.ActionRow()
+        self.row_hdmi_status.set_title("Stato Cavo HDMI")
+        self.lbl_hdmi_status = Gtk.Label(label="Rilevamento in corso...")
+        self.lbl_hdmi_status.add_css_class("dim-label")
+        self.row_hdmi_status.add_suffix(self.lbl_hdmi_status)
+
+        btn_refresh_hdmi = Gtk.Button(icon_name="view-refresh-symbolic")
+        btn_refresh_hdmi.set_valign(Gtk.Align.CENTER)
+        btn_refresh_hdmi.set_tooltip_text("Rileva stato porta HDMI")
+        btn_refresh_hdmi.connect("clicked", lambda b: self._refresh_hdmi_status())
+        self.row_hdmi_status.add_suffix(btn_refresh_hdmi)
+        group_hdmi.add(self.row_hdmi_status)
+
+        # Row 2: HDMI Mode Selector
+        self.row_hdmi_mode = Adw.ComboRow()
+        self.row_hdmi_mode.set_title("Modalità Schermo Esterno")
+        self.row_hdmi_mode.set_subtitle("Azione automatica al collegamento del cavo")
+        hdmi_modes = Gtk.StringList.new([
+            "Estendi Schermo (Desktop ampliato)",
+            "Duplica Schermo (Mirroring)",
+            "Solo Schermo Esterno (Spegni Yoga Book)",
+            "Solo Schermo Integrato (Ignora HDMI)"
+        ])
+        self.row_hdmi_mode.set_model(hdmi_modes)
+        self.row_hdmi_mode.connect("notify::selected", self._on_hdmi_mode_changed)
+        group_hdmi.add(self.row_hdmi_mode)
+
+        # Row 3: Extension Position Selector
+        self.row_hdmi_pos = Adw.ComboRow()
+        self.row_hdmi_pos.set_title("Posizione Schermo Esteso")
+        self.row_hdmi_pos.set_subtitle("Disposizione fisica rispetto allo Yoga Book")
+        hdmi_positions = Gtk.StringList.new([
+            "A Destra dello Yoga Book",
+            "A Sinistra dello Yoga Book",
+            "Sopra lo Yoga Book",
+            "Sotto lo Yoga Book"
+        ])
+        self.row_hdmi_pos.set_model(hdmi_positions)
+        group_hdmi.add(self.row_hdmi_pos)
+
+        # Row 4: External Display Scale
+        self.row_hdmi_scale = Adw.ComboRow()
+        self.row_hdmi_scale.set_title("Scala Monitor Esterno")
+        self.row_hdmi_scale.set_subtitle("Ingrandimento elementi interfaccia")
+        hdmi_scales = Gtk.StringList.new([
+            "100% (Scala standard)",
+            "125%",
+            "150%",
+            "200% (HiDPI / Retina)"
+        ])
+        self.row_hdmi_scale.set_model(hdmi_scales)
+        group_hdmi.add(self.row_hdmi_scale)
+
+        # Row 5: Apply Button
+        row_apply = Adw.ActionRow()
+        row_apply.set_title("Salva e Applica Configurazione")
+        row_apply.set_subtitle("Invia le impostazioni a MangoWC (wlroots)")
+
+        self.btn_apply_hdmi = Gtk.Button(label="Applica Ora")
+        self.btn_apply_hdmi.set_valign(Gtk.Align.CENTER)
+        self.btn_apply_hdmi.add_css_class("suggested-action")
+        self.btn_apply_hdmi.connect("clicked", lambda b: self._save_and_apply_hdmi())
+        row_apply.add_suffix(self.btn_apply_hdmi)
+        group_hdmi.add(row_apply)
+
+        page.add(group_hdmi)
+
+        # --- Group B: Internal Display (DSI-1) ---
+        group_dsi = Adw.PreferencesGroup()
+        group_dsi.set_title("Schermo Integrato Yoga Book (DSI-1)")
+        group_dsi.set_description("Pannello IPS 10.1\" 1200x1920 calibrato a 270° in scala 1.5x (1280x800 logico)")
+
+        # Row 6: Screen Backlight Slider
+        row_brightness = Adw.ActionRow()
+        row_brightness.set_title("Luminosità Schermo")
+        row_brightness.set_subtitle("Regolazione retroilluminazione hardware (intel_backlight)")
+
+        box_bright = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.scale_bright = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 5, 100, 1)
+        self.scale_bright.set_size_request(160, -1)
+        self.scale_bright.set_valign(Gtk.Align.CENTER)
+        self.scale_bright.connect("value-changed", self._on_screen_brightness_changed)
+
+        self.lbl_bright_val = Gtk.Label(label="--%")
+        self.lbl_bright_val.set_width_chars(5)
+        self.lbl_bright_val.set_valign(Gtk.Align.CENTER)
+
+        box_bright.append(self.scale_bright)
+        box_bright.append(self.lbl_bright_val)
+        row_brightness.add_suffix(box_bright)
+        group_dsi.add(row_brightness)
+
+        # Row 7: Auto-Rotation Status
+        self.row_rotation = Adw.ActionRow()
+        self.row_rotation.set_title("Rotazione Automatica Postura")
+        self.lbl_rotation_status = Gtk.Label(label="Caricamento...")
+        self.lbl_rotation_status.add_css_class("dim-label")
+        self.row_rotation.add_suffix(self.lbl_rotation_status)
+
+        btn_restart_rot = Gtk.Button(icon_name="view-refresh-symbolic")
+        btn_restart_rot.set_valign(Gtk.Align.CENTER)
+        btn_restart_rot.set_tooltip_text("Riavvia sensori rotazione (rot8.service)")
+        btn_restart_rot.connect("clicked", lambda b: self._restart_rotation_daemon())
+        self.row_rotation.add_suffix(btn_restart_rot)
+        group_dsi.add(self.row_rotation)
+
+        # Row 8: Manual Rotation Override
+        self.row_manual_rot = Adw.ComboRow()
+        self.row_manual_rot.set_title("Orientamento Display Manuale")
+        self.row_manual_rot.set_subtitle("Forza una specifica rotazione sul display integrato")
+        rot_models = Gtk.StringList.new([
+            "Orizzontale predefinito (270°)",
+            "Verticale (180°)",
+            "Orizzontale capovolto (90°)",
+            "Verticale capovolto (0°)"
+        ])
+        self.row_manual_rot.set_model(rot_models)
+        self.row_manual_rot.connect("notify::selected", self._on_manual_rotation_changed)
+        group_dsi.add(self.row_manual_rot)
+
+        page.add(group_dsi)
+        self.add(page)
+
+        # Load initial values for display page
+        self._load_display_config()
+        self._load_screen_brightness()
+
+    def _load_display_config(self):
+        cfg = {"hdmi_mode": "extend", "extend_position": "right", "hdmi_scale": 1.0}
+        if os.path.exists(DISPLAY_CONFIG_PATH):
+            try:
+                with open(DISPLAY_CONFIG_PATH, "r") as f:
+                    cfg.update(json.load(f))
+            except Exception:
+                pass
+
+        mode_map = {"extend": 0, "mirror": 1, "external_only": 2, "internal_only": 3}
+        self.row_hdmi_mode.set_selected(mode_map.get(cfg.get("hdmi_mode", "extend"), 0))
+
+        pos_map = {"right": 0, "left": 1, "above": 2, "below": 3}
+        self.row_hdmi_pos.set_selected(pos_map.get(cfg.get("extend_position", "right"), 0))
+
+        scale_val = float(cfg.get("hdmi_scale", 1.0))
+        scale_idx = 0
+        if abs(scale_val - 1.25) < 0.05:
+            scale_idx = 1
+        elif abs(scale_val - 1.5) < 0.05:
+            scale_idx = 2
+        elif abs(scale_val - 2.0) < 0.05:
+            scale_idx = 3
+        self.row_hdmi_scale.set_selected(scale_idx)
+        self._on_hdmi_mode_changed(self.row_hdmi_mode, None)
+
+    def _on_hdmi_mode_changed(self, row, param):
+        selected = row.get_selected()
+        self.row_hdmi_pos.set_sensitive(selected == 0)
+
+    def _refresh_hdmi_status(self):
+        status = "disconnected"
+        if os.path.exists(HDMI_STATUS_PATH):
+            try:
+                with open(HDMI_STATUS_PATH, "r") as f:
+                    status = f.read().strip()
+            except Exception:
+                pass
+
+        if status == "connected":
+            self.lbl_hdmi_status.set_markup("<span foreground='#1a7f37' weight='bold'>● Collegato</span>")
+            self.row_hdmi_status.set_subtitle("Dispositivo HDMI esterno rilevato e pronto.")
+        else:
+            self.lbl_hdmi_status.set_markup("<span foreground='#57606a'>○ Non collegato</span>")
+            self.row_hdmi_status.set_subtitle("Nessun cavo Micro-HDMI rilevato.")
+
+    def _save_and_apply_hdmi(self):
+        mode_keys = ["extend", "mirror", "external_only", "internal_only"]
+        pos_keys = ["right", "left", "above", "below"]
+        scales = [1.0, 1.25, 1.5, 2.0]
+
+        mode = mode_keys[self.row_hdmi_mode.get_selected()]
+        pos = pos_keys[self.row_hdmi_pos.get_selected()]
+        scale = scales[self.row_hdmi_scale.get_selected()]
+
+        cfg = {
+            "hdmi_mode": mode,
+            "extend_position": pos,
+            "hdmi_scale": scale,
+            "auto_apply": True
+        }
+
+        try:
+            os.makedirs(os.path.dirname(DISPLAY_CONFIG_PATH), exist_ok=True)
+            with open(DISPLAY_CONFIG_PATH, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+        self.btn_apply_hdmi.set_sensitive(False)
+        self.btn_apply_hdmi.set_label("Applicazione...")
+
+        def _worker():
+            res = subprocess.run(["yogabook-display-mgr", "apply"], capture_output=True, text=True)
+            msg = res.stdout.strip() or res.stderr.strip()
+            GLib.idle_add(self._on_hdmi_applied, res.returncode == 0, msg)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_hdmi_applied(self, success, msg):
+        self.btn_apply_hdmi.set_sensitive(True)
+        self.btn_apply_hdmi.set_label("Applica Ora")
+        self._refresh_hdmi_status()
+
+    def _load_screen_brightness(self):
+        try:
+            res = subprocess.run(["brightnessctl", "get"], capture_output=True, text=True, check=False)
+            val = int(res.stdout.strip())
+            self.scale_bright.set_value(val)
+            self.lbl_bright_val.set_text(f"{val}%")
+        except Exception:
+            pass
+
+    def _on_screen_brightness_changed(self, scale):
+        val = int(scale.get_value())
+        self.lbl_bright_val.set_text(f"{val}%")
+        if not self.syncing_display:
+            subprocess.run(["brightnessctl", "set", f"{val}%"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    def _refresh_rotation_state(self):
+        sub = "Sensori attivi"
+        if os.path.exists(ROTATION_STATE_PATH):
+            try:
+                with open(ROTATION_STATE_PATH, "r") as f:
+                    content = f.read()
+                    props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
+                    mode = props.get("mode", "laptop")
+                    tr = props.get("transform", "270")
+                    if mode == "laptop":
+                        sub = f"Bloccata (Modalità Laptop) | {tr}°"
+                    else:
+                        sub = f"Attiva (Modalità Tablet) | {tr}°"
+            except Exception:
+                pass
+        self.lbl_rotation_status.set_text(sub)
+
+    def _restart_rotation_daemon(self):
+        subprocess.run(["systemctl", "--user", "restart", "rot8.service"], check=False)
+        GLib.timeout_add(800, self._refresh_rotation_state)
+
+    def _on_manual_rotation_changed(self, row, param):
+        if self.syncing_display:
+            return
+        mapping = ["270", "180", "90", "normal"]
+        target = mapping[row.get_selected()]
+        subprocess.run(["wlr-randr", "--output", "DSI-1", "--transform", target], check=False)
+        self._refresh_rotation_state()
+
+    # =========================================================================
+    # 2. WI-FI PAGE
+    # =========================================================================
+    def _build_wifi_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Rete e Wi-Fi")
+        page.set_icon_name("network-wireless-symbolic")
+
+        # --- Group A: Adapter & Active Network ---
+        group_wifi = Adw.PreferencesGroup()
+        group_wifi.set_title("Scheda Wireless (wlan0)")
+        group_wifi.set_description("Broadcom BCM4356 802.11ac dual-band gestito da iwd e systemd-networkd")
+
+        # Row 1: Wi-Fi Toggle Switch
+        self.row_wifi_toggle = Adw.ActionRow()
+        self.row_wifi_toggle.set_title("Modulo Wi-Fi")
+        self.row_wifi_toggle.set_subtitle("Alimentazione radio wireless (rfkill)")
+        self.switch_wifi = Gtk.Switch()
+        self.switch_wifi.set_valign(Gtk.Align.CENTER)
+        self.switch_wifi.connect("notify::active", self._on_wifi_toggled)
+        self.row_wifi_toggle.add_suffix(self.switch_wifi)
+        group_wifi.add(self.row_wifi_toggle)
+
+        # Row 2: Active Connection Info
+        self.row_active_wifi = Adw.ActionRow()
+        self.row_active_wifi.set_title("Rete Connessa")
+        self.lbl_wifi_detail = Gtk.Label(label="Caricamento...")
+        self.lbl_wifi_detail.add_css_class("dim-label")
+        self.row_active_wifi.add_suffix(self.lbl_wifi_detail)
+        group_wifi.add(self.row_active_wifi)
+
+        page.add(group_wifi)
+
+        # --- Group B: Available Networks ---
+        self.group_networks = Adw.PreferencesGroup()
+        self.group_networks.set_title("Reti Disponibili")
+
+        header_suffix = Gtk.Button(icon_name="view-refresh-symbolic")
+        header_suffix.set_valign(Gtk.Align.CENTER)
+        header_suffix.set_tooltip_text("Cerca reti Wi-Fi")
+        header_suffix.connect("clicked", lambda b: self._scan_wifi())
+        self.group_networks.set_header_suffix(header_suffix)
+
+        page.add(self.group_networks)
+        self.add(page)
+
+        # Initial radio state
+        try:
+            res = subprocess.run(["rfkill", "list", "wifi"], capture_output=True, text=True, check=False)
+            is_blocked = "Soft blocked: yes" in res.stdout
+            self.switch_wifi.set_active(not is_blocked)
+        except Exception:
+            self.switch_wifi.set_active(True)
+
+    def _on_wifi_toggled(self, switch, param):
+        active = switch.get_active()
+        cmd = ["rfkill", "unblock", "wifi"] if active else ["rfkill", "block", "wifi"]
+        subprocess.run(cmd, check=False)
+        GLib.timeout_add(1000, self._refresh_active_wifi)
+
+    def _refresh_active_wifi(self):
+        def _worker():
+            try:
+                res = subprocess.run(["iwctl", "station", "wlan0", "show"], capture_output=True, text=True, check=False)
+                lines = res.stdout.splitlines()
+                ssid, ip, rssi, freq = "Non connesso", "--", "--", "--"
+                for l in lines:
+                    if "Connected network" in l:
+                        ssid = l.split(maxsplit=2)[-1].strip()
+                    elif "IPv4 address" in l:
+                        ip = l.split(maxsplit=2)[-1].strip()
+                    elif "RSSI" in l:
+                        rssi = l.split(maxsplit=2)[-1].strip()
+                    elif "Frequency" in l:
+                        freq = l.split(maxsplit=2)[-1].strip() + " MHz"
+                GLib.idle_add(self._update_active_wifi_ui, ssid, ip, rssi, freq)
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_active_wifi_ui(self, ssid, ip, rssi, freq):
+        if ssid != "Non connesso":
+            self.row_active_wifi.set_title(f"Connesso a: {ssid}")
+            self.row_active_wifi.set_subtitle(f"IP: {ip}  |  Segnale: {rssi}  |  Freq: {freq}")
+            self.lbl_wifi_detail.set_markup("<span foreground='#1a7f37' weight='bold'>● Attivo</span>")
+        else:
+            self.row_active_wifi.set_title("Nessuna rete connessa")
+            self.row_active_wifi.set_subtitle("Abilita il Wi-Fi o seleziona una rete dall'elenco sottostante.")
+            self.lbl_wifi_detail.set_markup("<span foreground='#57606a'>○ Disconnesso</span>")
+
+    def _scan_wifi(self):
+        def _worker():
+            subprocess.run(["iwctl", "station", "wlan0", "scan"], check=False)
+            GLib.usleep(1500000)
+            GLib.idle_add(self._populate_available_networks)
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _populate_available_networks(self):
+        def _worker():
+            try:
+                res = subprocess.run(["iwctl", "station", "wlan0", "get-networks"], capture_output=True, text=True, check=False)
+                lines = res.stdout.splitlines()
+                networks = []
+                for l in lines:
+                    parts = [p.strip() for p in re.split(r'\s{2,}', l) if p.strip()]
+                    if len(parts) >= 2 and not parts[0].startswith("Network") and not parts[0].startswith("---") and not parts[0].startswith("Available"):
+                        net_name = parts[0].replace(">", "").strip()
+                        sec = parts[1] if len(parts) > 1 else ""
+                        sig = parts[2] if len(parts) > 2 else ""
+                        if net_name and net_name not in [n[0] for n in networks]:
+                            networks.append((net_name, sec, sig))
+                GLib.idle_add(self._render_networks_list, networks)
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _render_networks_list(self, networks):
+        for net_name, sec, sig in networks[:6]:
+            row = Adw.ActionRow()
+            row.set_title(net_name)
+            row.set_subtitle(f"Sicurezza: {sec}  |  Segnale: {sig}")
+            btn_conn = Gtk.Button(label="Connetti")
+            btn_conn.set_valign(Gtk.Align.CENTER)
+            btn_conn.connect("clicked", lambda b, n=net_name: subprocess.Popen(["foot", "-e", "iwctl", "station", "wlan0", "connect", n]))
+            row.add_suffix(btn_conn)
+            self.group_networks.add(row)
+
+    # =========================================================================
+    # 3. BLUETOOTH PAGE
+    # =========================================================================
+    def _build_bluetooth_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Bluetooth")
+        page.set_icon_name("bluetooth-symbolic")
+
+        # --- Group A: Bluetooth Adapter ---
+        group_bt = Adw.PreferencesGroup()
+        group_bt.set_title("Adattatore Bluetooth (hci0)")
+        group_bt.set_description("Broadcom BCM4356A2 UART con firmware BCM4356A2.hcd e stack BlueZ")
+
+        # Row 1: Bluetooth Power Switch
+        self.row_bt_power = Adw.ActionRow()
+        self.row_bt_power.set_title("Alimentazione Bluetooth")
+        self.row_bt_power.set_subtitle("Accendi o spegni il modulo radio Bluetooth")
+        self.switch_bt = Gtk.Switch()
+        self.switch_bt.set_valign(Gtk.Align.CENTER)
+        self.switch_bt.connect("notify::active", self._on_bluetooth_toggled)
+        self.row_bt_power.add_suffix(self.switch_bt)
+        group_bt.add(self.row_bt_power)
+
+        # Row 2: Visibility Toggle
+        self.row_bt_disc = Adw.ActionRow()
+        self.row_bt_disc.set_title("Visibilità Dispositivo")
+        self.row_bt_disc.set_subtitle("Rendi lo Yoga Book visibile ad altri dispositivi")
+        self.switch_disc = Gtk.Switch()
+        self.switch_disc.set_valign(Gtk.Align.CENTER)
+        self.switch_disc.connect("notify::active", self._on_discoverable_toggled)
+        self.row_bt_disc.add_suffix(self.switch_disc)
+        group_bt.add(self.row_bt_disc)
+
+        page.add(group_bt)
+
+        # --- Group B: Paired & Known Devices ---
+        self.group_bt_devices = Adw.PreferencesGroup()
+        self.group_bt_devices.set_title("Dispositivi Accoppiati")
+
+        btn_scan_bt = Gtk.Button(icon_name="view-refresh-symbolic")
+        btn_scan_bt.set_valign(Gtk.Align.CENTER)
+        btn_scan_bt.set_tooltip_text("Aggiorna dispositivi Bluetooth")
+        btn_scan_bt.connect("clicked", lambda b: self._refresh_bluetooth_devices())
+        self.group_bt_devices.set_header_suffix(btn_scan_bt)
+
+        page.add(self.group_bt_devices)
+        self.add(page)
+
+        # Initial radio state
+        try:
+            res = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
+            is_blocked = "Soft blocked: yes" in res.stdout
+            self.switch_bt.set_active(not is_blocked)
+        except Exception:
+            self.switch_bt.set_active(False)
+
+    def _on_bluetooth_toggled(self, switch, param):
+        active = switch.get_active()
+        if active:
+            subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
+            subprocess.run(["bluetoothctl", "power", "on"], check=False)
+        else:
+            subprocess.run(["bluetoothctl", "power", "off"], check=False)
+            subprocess.run(["rfkill", "block", "bluetooth"], check=False)
+        GLib.timeout_add(1000, self._refresh_bluetooth_devices)
+
+    def _on_discoverable_toggled(self, switch, param):
+        active = switch.get_active()
+        arg = "on" if active else "off"
+        subprocess.run(["bluetoothctl", "discoverable", arg], check=False)
+
+    def _refresh_bluetooth_devices(self):
+        def _worker():
+            try:
+                res = subprocess.run(["bluetoothctl", "devices"], capture_output=True, text=True, check=False)
+                devices = []
+                for line in res.stdout.splitlines():
+                    parts = line.strip().split(maxsplit=2)
+                    if len(parts) >= 3 and parts[0] == "Device":
+                        mac = parts[1]
+                        name = parts[2]
+                        devices.append((mac, name))
+                GLib.idle_add(self._update_bt_devices_ui, devices)
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_bt_devices_ui(self, devices):
+        if not devices:
+            row = Adw.ActionRow()
+            row.set_title("Nessun dispositivo accoppiato")
+            row.set_subtitle("Usa il comando 'bluetoothctl scan on' per accoppiare nuove periferiche.")
+            self.group_bt_devices.add(row)
+        else:
+            for mac, name in devices:
+                row = Adw.ActionRow()
+                row.set_title(name)
+                row.set_subtitle(f"MAC: {mac}")
+                btn_conn = Gtk.Button(label="Connetti")
+                btn_conn.set_valign(Gtk.Align.CENTER)
+                btn_conn.connect("clicked", lambda b, m=mac: subprocess.run(["bluetoothctl", "connect", m], check=False))
+                row.add_suffix(btn_conn)
+                self.group_bt_devices.add(row)
+
+    # =========================================================================
+    # 4. AUDIO PAGE
+    # =========================================================================
+    def _build_audio_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Audio e Suono")
+        page.set_icon_name("audio-volume-high-symbolic")
+
+        # --- Group A: Output Sink ---
+        group_out = Adw.PreferencesGroup()
+        group_out.set_title("Uscita Audio (Altoparlanti e Cuffie)")
+        group_out.set_description("Dispositivo principale: Built-in Audio Pro (cht-yogabook)")
+
+        row_vol = Adw.ActionRow()
+        row_vol.set_title("Volume Principale")
+        box_vol = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        self.scale_vol = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.scale_vol.set_size_request(160, -1)
+        self.scale_vol.set_valign(Gtk.Align.CENTER)
+        self.scale_vol.connect("value-changed", self._on_vol_changed)
+
+        self.lbl_vol_val = Gtk.Label(label="--%")
+        self.lbl_vol_val.set_width_chars(5)
+        self.lbl_vol_val.set_valign(Gtk.Align.CENTER)
+
+        btn_mute_sink = Gtk.Button(icon_name="audio-volume-muted-symbolic")
+        btn_mute_sink.set_valign(Gtk.Align.CENTER)
+        btn_mute_sink.set_tooltip_text("Attiva / Disattiva Muto")
+        btn_mute_sink.connect("clicked", lambda b: self._toggle_sink_mute())
+
+        box_vol.append(self.scale_vol)
+        box_vol.append(self.lbl_vol_val)
+        box_vol.append(btn_mute_sink)
+        row_vol.add_suffix(box_vol)
+        group_out.add(row_vol)
+        page.add(group_out)
+
+        # --- Group B: Input Source ---
+        group_in = Adw.PreferencesGroup()
+        group_in.set_title("Ingresso Audio (Microfono)")
+        group_in.set_description("Microfono array integrato (@DEFAULT_AUDIO_SOURCE@)")
+
+        row_mic = Adw.ActionRow()
+        row_mic.set_title("Livello Microfono")
+        box_mic = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        self.scale_mic = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.scale_mic.set_size_request(160, -1)
+        self.scale_mic.set_valign(Gtk.Align.CENTER)
+        self.scale_mic.connect("value-changed", self._on_mic_changed)
+
+        self.lbl_mic_val = Gtk.Label(label="--%")
+        self.lbl_mic_val.set_width_chars(5)
+        self.lbl_mic_val.set_valign(Gtk.Align.CENTER)
+
+        btn_mute_source = Gtk.Button(icon_name="audio-input-microphone-symbolic")
+        btn_mute_source.set_valign(Gtk.Align.CENTER)
+        btn_mute_source.set_tooltip_text("Attiva / Disattiva Muto Microfono")
+        btn_mute_source.connect("clicked", lambda b: self._toggle_source_mute())
+
+        box_mic.append(self.scale_mic)
+        box_mic.append(self.lbl_mic_val)
+        box_mic.append(btn_mute_source)
+        row_mic.add_suffix(box_mic)
+        group_in.add(row_mic)
+        page.add(group_in)
+
+        # --- Group C: Mixer Shortcut ---
+        group_mixer = Adw.PreferencesGroup()
+        group_mixer.set_title("Configurazione Avanzata")
+        row_pavu = Adw.ActionRow()
+        row_pavu.set_title("Controllo Volume PipeWire (Pavucontrol)")
+        row_pavu.set_subtitle("Gestione canali dettagliata, profili e flussi applicativi")
+        btn_launch_pavu = Gtk.Button(label="Apri Mixer")
+        btn_launch_pavu.set_valign(Gtk.Align.CENTER)
+        btn_launch_pavu.connect("clicked", lambda b: subprocess.Popen(["pavucontrol"]))
+        row_pavu.add_suffix(btn_launch_pavu)
+        group_mixer.add(row_pavu)
+        page.add(group_mixer)
+
+        self.add(page)
+        self._load_audio_state()
+
+    def _load_audio_state(self):
+        try:
+            res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, check=False)
+            val = int(round(float(res.stdout.strip().split()[1]) * 100))
+            self.scale_vol.set_value(val)
+            self.lbl_vol_val.set_text(f"{val}%")
+        except Exception:
+            pass
+
+        try:
+            res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], capture_output=True, text=True, check=False)
+            val = int(round(float(res.stdout.strip().split()[1]) * 100))
+            self.scale_mic.set_value(val)
+            self.lbl_mic_val.set_text(f"{val}%")
+        except Exception:
+            pass
+
+    def _on_vol_changed(self, scale):
+        val = int(scale.get_value())
+        self.lbl_vol_val.set_text(f"{val}%")
+        if not self.syncing_audio:
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{val/100:.2f}"], check=False)
+
+    def _on_mic_changed(self, scale):
+        val = int(scale.get_value())
+        self.lbl_mic_val.set_text(f"{val}%")
+        if not self.syncing_audio:
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{val/100:.2f}"], check=False)
+
+    def _toggle_sink_mute(self):
+        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], check=False)
+        self._load_audio_state()
+
+    def _toggle_source_mute(self):
+        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], check=False)
+        self._load_audio_state()
+
+    # =========================================================================
+    # 5. HALO KEYBOARD & INPUT PAGE
+    # =========================================================================
+    def _build_halo_input_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Tastiera Halo e Input")
+        page.set_icon_name("input-keyboard-symbolic")
+
+        # --- Group A: Halo Keyboard ---
+        group_halo = Adw.PreferencesGroup()
+        group_halo.set_title("Tastiera a Sfioramento (Halo Keyboard)")
+        group_halo.set_description("Superficie touch capacitiva con LED bianchi e feedback aptico")
+
+        # Halo Backlight Slider
+        row_halo_light = Adw.ActionRow()
+        row_halo_light.set_title("Retroilluminazione Tasti Halo")
+        row_halo_light.set_subtitle("Regola la luminosità dei tasti a sfioramento (ybwmi::kbd_backlight)")
+
+        box_halo = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.scale_halo = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 5)
+        self.scale_halo.set_size_request(160, -1)
+        self.scale_halo.set_valign(Gtk.Align.CENTER)
+        self.scale_halo.connect("value-changed", self._on_halo_backlight_changed)
+
+        self.lbl_halo_val = Gtk.Label(label="--%")
+        self.lbl_halo_val.set_width_chars(5)
+        self.lbl_halo_val.set_valign(Gtk.Align.CENTER)
+
+        box_halo.append(self.scale_halo)
+        box_halo.append(self.lbl_halo_val)
+        row_halo_light.add_suffix(box_halo)
+        group_halo.add(row_halo_light)
+
+        # Calibration note
+        row_layout = Adw.ActionRow()
+        row_layout.set_title("Calibrazione Matrice Touch")
+        row_layout.set_subtitle("Mappatura hardware a 270° (/etc/touch_keyboard/touch-hw.csv)")
+        group_halo.add(row_layout)
+
+        page.add(group_halo)
+
+        # --- Group B: Virtual Keyboard ---
+        group_vkeyboard = Adw.PreferencesGroup()
+        group_vkeyboard.set_title("Tastiera a Schermo (wvkbd)")
+        group_vkeyboard.set_description("Tastiera touch virtuale per l'utilizzo in modalità tablet o tenda")
+
+        row_toggle_vk = Adw.ActionRow()
+        row_toggle_vk.set_title("Attivazione Tastiera Virtuale")
+        row_toggle_vk.set_subtitle("Mostra o nasconde la tastiera su schermo (toggle-keyboard)")
+        btn_vk = Gtk.Button(label="Alterna Tastiera")
+        btn_vk.set_valign(Gtk.Align.CENTER)
+        btn_vk.connect("clicked", lambda b: subprocess.run(["toggle-keyboard"], check=False))
+        row_toggle_vk.add_suffix(btn_vk)
+        group_vkeyboard.add(row_toggle_vk)
+
+        page.add(group_vkeyboard)
+
+        # --- Group C: Wacom Create Pad ---
+        group_wacom = Adw.PreferencesGroup()
+        group_wacom.set_title("Tavoletta Grafica e Penna Wacom EMR")
+        group_wacom.set_description("Superficie Create Pad integrata con digitizzatore a risonanza elettromagnetica")
+
+        row_wacom = Adw.ActionRow()
+        row_wacom.set_title("Digitizzatore Penna")
+        row_wacom.set_subtitle("Wacom HID 169 (WCOM0019:00) | 2048 livelli di pressione")
+        lbl_wacom_map = Gtk.Label(label="Mappato a DSI-1")
+        lbl_wacom_map.add_css_class("dim-label")
+        row_wacom.add_suffix(lbl_wacom_map)
+        group_wacom.add(row_wacom)
+
+        page.add(group_wacom)
+        self.add(page)
+
+        self._load_halo_backlight()
+
+    def _load_halo_backlight(self):
+        try:
+            res = subprocess.run(["brightnessctl", "--device=ybwmi::kbd_backlight", "get"], capture_output=True, text=True, check=False)
+            raw = int(res.stdout.strip())
+            pct = int(round(raw * 100 / 255.0))
+            self.scale_halo.set_value(pct)
+            self.lbl_halo_val.set_text(f"{pct}%")
+        except Exception:
+            pass
+
+    def _on_halo_backlight_changed(self, scale):
+        pct = int(scale.get_value())
+        self.lbl_halo_val.set_text(f"{pct}%")
+        if not self.syncing_halo:
+            subprocess.run(["brightnessctl", "--device=ybwmi::kbd_backlight", "set", f"{pct}%"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    # =========================================================================
+    # 6. BATTERY & POWER PAGE
+    # =========================================================================
+    def _build_battery_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Batteria e Risparmio")
+        page.set_icon_name("battery-symbolic")
+
+        # --- Group A: Real-time Metrics ---
+        group_batt = Adw.PreferencesGroup()
+        group_batt.set_title("Stato Batteria in Tempo Reale")
+        group_batt.set_description("Sensore di carica hardware Texas Instruments bq27542 (I2C)")
+
+        self.row_batt_charge = Adw.ActionRow()
+        self.row_batt_charge.set_title("Livello di Carica")
+        self.lbl_batt_pct = Gtk.Label(label="--%")
+        self.lbl_batt_pct.add_css_class("title-2")
+        self.row_batt_charge.add_suffix(self.lbl_batt_pct)
+        group_batt.add(self.row_batt_charge)
+
+        self.row_batt_power = Adw.ActionRow()
+        self.row_batt_power.set_title("Consumo Energetico Istantaneo")
+        self.lbl_batt_power = Gtk.Label(label="-- W")
+        self.lbl_batt_power.add_css_class("dim-label")
+        self.row_batt_power.add_suffix(self.lbl_batt_power)
+        group_batt.add(self.row_batt_power)
+
+        self.row_batt_temp = Adw.ActionRow()
+        self.row_batt_temp.set_title("Temperatura Batteria")
+        self.lbl_batt_temp = Gtk.Label(label="-- °C")
+        self.lbl_batt_temp.add_css_class("dim-label")
+        self.row_batt_temp.add_suffix(self.lbl_batt_temp)
+        group_batt.add(self.row_batt_temp)
+
+        page.add(group_batt)
+
+        # --- Group B: Battery Health & Lifespan ---
+        group_health = Adw.PreferencesGroup()
+        group_health.set_title("Salute e Usura Batteria")
+
+        self.row_health = Adw.ActionRow()
+        self.row_health.set_title("Stato di Salute (State of Health)")
+        self.lbl_health_pct = Gtk.Label(label="--%")
+        self.lbl_health_pct.add_css_class("dim-label")
+        self.row_health.add_suffix(self.lbl_health_pct)
+        group_health.add(self.row_health)
+
+        self.row_cycles = Adw.ActionRow()
+        self.row_cycles.set_title("Cicli di Carica Completi")
+        self.lbl_cycles = Gtk.Label(label="-- cicli")
+        self.lbl_cycles.add_css_class("dim-label")
+        self.row_cycles.add_suffix(self.lbl_cycles)
+        group_health.add(self.row_cycles)
+
+        page.add(group_health)
+
+        # --- Group C: Standby & Suspend ---
+        group_sleep = Adw.PreferencesGroup()
+        group_sleep.set_title("Gestione Sospensione e Standby")
+
+        row_s2idle = Adw.ActionRow()
+        row_s2idle.set_title("Modalità di Sospensione")
+        row_s2idle.set_subtitle("Connected Standby s2idle con ripristino PWM backlight Cherryview")
+        group_sleep.add(row_s2idle)
+
+        row_lid = Adw.ActionRow()
+        row_lid.set_title("Azione Chiusura Coperchio")
+        row_lid.set_subtitle("Sospensione istantanea a basso consumo (systemd logind yogabook.conf)")
+        group_sleep.add(row_lid)
+
+        page.add(group_sleep)
+        self.add(page)
+
+    def _refresh_battery_metrics(self):
+        try:
+            uevent_path = "/sys/class/power_supply/bq27542-0/uevent"
+            if not os.path.exists(uevent_path):
+                return
+            with open(uevent_path, "r") as f:
+                content = f.read()
+            props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
+
+            status = props.get("POWER_SUPPLY_STATUS", "Discharging")
+            charge_now = int(props.get("POWER_SUPPLY_CHARGE_NOW", 0))
+            charge_full = int(props.get("POWER_SUPPLY_CHARGE_FULL", 1))
+            charge_design = int(props.get("POWER_SUPPLY_CHARGE_FULL_DESIGN", 1))
+            voltage_now = int(props.get("POWER_SUPPLY_VOLTAGE_NOW", 0))
+            current_now = int(props.get("POWER_SUPPLY_CURRENT_NOW", 0))
+            temp_raw = int(props.get("POWER_SUPPLY_TEMP", 0))
+            cycles = props.get("POWER_SUPPLY_CYCLE_COUNT", "--")
+
+            pct = int(round(charge_now * 100.0 / charge_full)) if charge_full > 0 else 0
+            power_w = (voltage_now * current_now) / 1e12
+
+            status_ita = "In carica" if status == "Charging" else "In uso a batteria"
+            self.lbl_batt_pct.set_text(f"{pct}%")
+            self.row_batt_charge.set_subtitle(f"Stato: {status_ita} ({status})")
+
+            self.lbl_batt_power.set_text(f"{power_w:.2f} W")
+            self.row_batt_power.set_subtitle(f"Tensione: {voltage_now/1e6:.2f} V  |  Corrente: {current_now/1e6:.2f} A")
+
+            self.lbl_batt_temp.set_text(f"{temp_raw/10.0:.1f} °C")
+
+            health_pct = int(round(charge_full * 100.0 / charge_design)) if charge_design > 0 else 100
+            self.lbl_health_pct.set_text(f"{health_pct}%")
+            self.row_health.set_subtitle(f"Capacità attuale: {charge_full//1000} mAh  |  Capacità di fabbrica: {charge_design//1000} mAh")
+
+            self.lbl_cycles.set_text(f"{cycles} cicli")
+            self.row_cycles.set_subtitle("Cicli totali registrati dal fuel gauge hardware")
+        except Exception:
+            pass
+
+    # =========================================================================
+    # 7. APPEARANCE & SYSTEM INFO PAGE
+    # =========================================================================
+    def _build_system_page(self):
+        page = Adw.PreferencesPage()
+        page.set_title("Aspetto e Info Sistema")
+        page.set_icon_name("preferences-system-symbolic")
+
+        # --- Group A: Theme & Appearance ---
+        group_look = Adw.PreferencesGroup()
+        group_look.set_title("Personalizzazione Aspetto")
+        group_look.set_description("Stile globale per l'ambiente desktop e le applicazioni")
+
+        row_dark = Adw.ActionRow()
+        row_dark.set_title("Modalità Scura (Dark Mode)")
+        row_dark.set_subtitle("Applica il tema scuro a GTK 3, GTK 4 e Libadwaita")
+        self.switch_dark = Gtk.Switch()
+        self.switch_dark.set_valign(Gtk.Align.CENTER)
+        self.switch_dark.connect("notify::active", self._on_dark_mode_toggled)
+        row_dark.add_suffix(self.switch_dark)
+        group_look.add(row_dark)
+
+        page.add(group_look)
+
+        # --- Group B: Hardware Specs ---
+        group_hw = Adw.PreferencesGroup()
+        group_hw.set_title("Specifiche Hardware Dispositivo")
+
+        row_model = Adw.ActionRow()
+        row_model.set_title("Dispositivo")
+        row_model.set_subtitle("Lenovo Yoga Book 1st Gen (YB1-X91F)")
+        group_hw.add(row_model)
+
+        row_cpu = Adw.ActionRow()
+        row_cpu.set_title("Processore (CPU)")
+        row_cpu.set_subtitle("Intel® Atom™ x5-Z8550 Quad-Core (1.44 GHz base, 2.40 GHz burst)")
+        group_hw.add(row_cpu)
+
+        row_ram = Adw.ActionRow()
+        row_ram.set_title("Memoria RAM")
+        row_ram.set_subtitle("4 GB LPDDR3 1600 MHz Dual-Channel + 6 GB ZRAM (zstd)")
+        group_hw.add(row_ram)
+
+        row_storage = Adw.ActionRow()
+        row_storage.set_title("Archiviazione Flash")
+        row_storage.set_subtitle("64 GB eMMC (ottimizzato commit=60, noatime per salvaguardia usura)")
+        group_hw.add(row_storage)
+
+        row_gpu = Adw.ActionRow()
+        row_gpu.set_title("Scheda Video (GPU)")
+        row_gpu.set_subtitle("Intel® HD Graphics 400 (Gen8 Cherryview / 12 Execution Units)")
+        group_hw.add(row_gpu)
+
+        page.add(group_hw)
+
+        # --- Group C: Software & Desktop ---
+        group_sw = Adw.PreferencesGroup()
+        group_sw.set_title("Ambiente Software e Sessione")
+
+        row_os = Adw.ActionRow()
+        row_os.set_title("Sistema Operativo")
+        row_os.set_subtitle("Arch Linux (Rolling Release standard, Linux x86_64)")
+        group_sw.add(row_os)
+
+        kernel_ver = os.uname().release
+        row_kernel = Adw.ActionRow()
+        row_kernel.set_title("Kernel Linux")
+        row_kernel.set_subtitle(kernel_ver)
+        group_sw.add(row_kernel)
+
+        row_comp = Adw.ActionRow()
+        row_comp.set_title("Compositor Wayland")
+        row_comp.set_subtitle("MangoWC (wlroots 0.18+ ultraleggero, accelerato OpenGL ES)")
+        group_sw.add(row_comp)
+
+        row_shell = Adw.ActionRow()
+        row_shell.set_title("Touch Desktop Stack")
+        row_shell.set_subtitle("Waybar Top-Bar + Centro di Controllo GTK 4 Layer-Shell")
+        group_sw.add(row_shell)
+
+        page.add(group_sw)
+        self.add(page)
+
+        self._load_dark_mode_state()
+
+    def _load_dark_mode_state(self):
+        is_dark = False
+        if os.path.exists(GTK4_SETTINGS_PATH):
+            try:
+                with open(GTK4_SETTINGS_PATH, "r") as f:
+                    for line in f:
+                        if "gtk-application-prefer-dark-theme" in line:
+                            val = line.split("=", 1)[1].strip()
+                            is_dark = (val == "1")
+            except Exception:
+                pass
+        self.switch_dark.set_active(is_dark)
+
+    def _on_dark_mode_toggled(self, switch, param):
+        is_dark = switch.get_active()
+        sm = Adw.StyleManager.get_default()
+        sm.set_color_scheme(Adw.ColorScheme.FORCE_DARK if is_dark else Adw.ColorScheme.FORCE_LIGHT)
+
+        val_str = "1" if is_dark else "0"
+        icon_theme = "Papirus-Dark" if is_dark else "Papirus-Light"
+
+        for p in [GTK4_SETTINGS_PATH, GTK3_SETTINGS_PATH]:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r") as f:
+                        lines = f.readlines()
+                    out = []
+                    found_dark = False
+                    found_icon = False
+                    for l in lines:
+                        if l.startswith("gtk-application-prefer-dark-theme"):
+                            out.append(f"gtk-application-prefer-dark-theme={val_str}\n")
+                            found_dark = True
+                        elif l.startswith("gtk-icon-theme-name"):
+                            out.append(f"gtk-icon-theme-name={icon_theme}\n")
+                            found_icon = True
+                        else:
+                            out.append(l)
+                    if not found_dark:
+                        out.append(f"gtk-application-prefer-dark-theme={val_str}\n")
+                    if not found_icon:
+                        out.append(f"gtk-icon-theme-name={icon_theme}\n")
+                    with open(p, "w") as f:
+                        f.writelines(out)
+                except Exception as e:
+                    print(f"Error updating {p}: {e}")
+
+
+def main():
+    app = YogaBookSettingsApp()
+    sys.exit(app.run([]))
+
+
+if __name__ == "__main__":
+    main()

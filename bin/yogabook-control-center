@@ -304,17 +304,10 @@ def check_bt_active():
 
 def check_rot_status():
     """Returns (is_active_bool, subtitle_text) aware of hardware posture lock."""
-    try:
-        out = subprocess.check_output(
-            ["systemctl", "--user", "is-active", "rot8.service"],
-            text=True, stderr=subprocess.DEVNULL
-        ).strip()
-        if out != "active":
-            return False, "Disattivata"
-    except Exception:
+    state_file = f"/run/user/{os.getuid()}/yogabook-rotation.state"
+    if not os.path.exists(state_file):
         return False, "Disattivata"
 
-    state_file = f"/run/user/{os.getuid()}/yogabook-rotation.state"
     mode = "laptop"
     if os.path.exists(state_file):
         try:
@@ -484,7 +477,13 @@ class YogaBookControlCenter(Gtk.Window):
         spacer.set_hexpand(True)
         header_box.append(spacer)
 
-        # Action buttons: Suspend, Reboot, Shutdown, Close
+        # Action buttons: Settings, Suspend, Reboot, Shutdown, Close
+        btn_settings = Gtk.Button(label="󰒓")
+        btn_settings.set_tooltip_text("Impostazioni")
+        btn_settings.add_css_class("header-btn")
+        btn_settings.connect("clicked", lambda b: self._run_action(["yogabook-settings"]))
+        header_box.append(btn_settings)
+
         btn_suspend = Gtk.Button(label="󰤄")
         btn_suspend.set_tooltip_text("Sospendi")
         btn_suspend.add_css_class("header-btn")

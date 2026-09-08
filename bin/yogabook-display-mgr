@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""
+Yoga Book Display & HDMI Manager (MangoWC / wlroots)
+Handles dynamic display topologies for the Lenovo Yoga Book (YB1-X91F) Micro-HDMI port.
+
+Supported Topologies:
+- extend: External monitor placed Right, Left, Above, or Below the Yoga Book
+- mirror: Cloned display (both outputs at 0,0)
+- external_only: External display enabled at 0,0, internal DSI-1 disabled
+- internal_only: Internal DSI-1 enabled at 0,0, external HDMI disabled
+"""
+
+import sys
+import os
+import json
+import subprocess
+import argparse
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+CONFIG_PATH = os.path.expanduser("~/.config/yogabook/display.json")
+HDMI_STATUS_PATH = "/sys/class/drm/card0-HDMI-A-1/status"
+HDMI_MODES_PATH = "/sys/class/drm/card0-HDMI-A-1/modes"
+
+DEFAULT_CONFIG = {
+    "hdmi_mode": "extend",          # extend, mirror, external_only, internal_only
+    "extend_position": "right",     # right, left, above, below
+    "hdmi_scale": 1.0,
+    "auto_apply": True
+}
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                cfg = json.load(f)
+                res = dict(DEFAULT_CONFIG)
+                res.update(cfg)
+                return res
+        except Exception as e:
+            logging.warning(f"Failed to read {CONFIG_PATH}: {e}")
+    return dict(DEFAULT_CONFIG)
+
+def save_config(cfg):
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(cfg, f, indent=2)
+        return True
+    except Exception as e:
+        logging.error(f"Failed to write {CONFIG_PATH}: {e}")
+        return False
+
+def get_hdmi_status():
+    if os.path.exists(HDMI_STATUS_PATH):
+        try:
+            with open(HDMI_STATUS_PATH, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return "disconnected"
+
+def get_hdmi_modes():
+    modes = []
+    if os.path.exists(HDMI_MODES_PATH):
+        try:
+            with open(HDMI_MODES_PATH, "r") as f:
+                for line in f:
+                    m = line.strip()
+                    if m and m not in modes:
+                        modes.append(m)
+        except Exception:
+            pass
+    return modes
+
+def apply_display_config(custom_cfg=None):
+    cfg = custom_cfg or load_config()
+    status = get_hdmi_status()
+    env = os.environ.copy()
+    if "WAYLAND_DISPLAY" not in env:
+        env["WAYLAND_DISPLAY"] = "wayland-0"
+
+    logging.info(f"Applying display configuration. HDMI status: {status}, mode: {cfg.get('hdmi_mode')}")
+
+    if status != "connected":
+        # Ensure internal DSI-1 is on and valid
+        cmd = ["wlr-randr", "--output", "DSI-1", "--on", "--pos", "0,0"]
+        try:
+            subprocess.run(cmd, env=env, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logging.info("HDMI disconnected: internal display DSI-1 confirmed active.")
+            return True, "HDMI non connesso. Schermo integrato attivo."
+        except Exception as e:
+            logging.error(f"Error resetting DSI-1: {e}")
+            return False, f"Errore: {e}"
+
+    # HDMI is connected
+    mode = cfg.get("hdmi_mode", "extend")
+    pos = cfg.get("extend_position", "right")
+    scale = str(cfg.get("hdmi_scale", 1.0))
+
+    if mode == "extend":
+        pos_flag = f"--{pos}-of" if pos in ("right", "left", "above", "below") else "--right-of"
+        cmd = [
+            "wlr-randr",
+            "--output", "DSI-1", "--on", "--pos", "0,0",
+            "--output", "HDMI-A-1", "--on", "--preferred", "--scale", scale, pos_flag, "DSI-1"
+        ]
+        msg = f"Schermo esteso ({pos}) con successo."
+    elif mode == "mirror":
+        cmd = [
+            "wlr-randr",
+            "--output", "DSI-1", "--on", "--pos", "0,0",
+            "--output", "HDMI-A-1", "--on", "--preferred", "--scale", scale, "--pos", "0,0"
+        ]
+        msg = "Schermo duplicato (mirroring) con successo."
+    elif mode == "external_only":
+        cmd = [
+            "wlr-randr",
+            "--output", "HDMI-A-1", "--on", "--preferred", "--scale", scale, "--pos", "0,0",
+            "--output", "DSI-1", "--off"
+        ]
+        msg = "Solo schermo esterno HDMI attivato (schermo interno spento)."
+    elif mode == "internal_only":
+        cmd = [
+            "wlr-randr",
+            "--output", "HDMI-A-1", "--off",
+            "--output", "DSI-1", "--on", "--pos", "0,0"
+        ]
+        msg = "Solo schermo interno attivato (HDMI disattivato)."
+    else:
+        cmd = ["wlr-randr", "--output", "DSI-1", "--on", "--pos", "0,0"]
+        msg = "Configurazione predefinita ripristinata."
+
+    try:
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            logging.info(f"wlr-randr success: {' '.join(cmd)}")
+            return True, msg
+        else:
+            err = res.stderr.strip() or res.stdout.strip()
+            logging.warning(f"wlr-randr returned {res.returncode}: {err}")
+            return False, f"Errore compositor: {err}"
+    except Exception as e:
+        logging.error(f"Execution failed: {e}")
+        return False, f"Errore esecuzione: {e}"
+
+def main():
+    parser = argparse.ArgumentParser(description="Yoga Book Display & HDMI Manager")
+    parser.add_argument("action", nargs="?", default="status", choices=["status", "apply", "set", "restore"])
+    parser.add_argument("--mode", choices=["extend", "mirror", "external_only", "internal_only"], help="HDMI display mode")
+    parser.add_argument("--position", choices=["right", "left", "above", "below"], help="Position relative to Yoga Book when extending")
+    parser.add_argument("--scale", type=float, help="External display scale factor")
+    args = parser.parse_args()
+
+    if args.action == "status":
+        st = {
+            "hdmi_status": get_hdmi_status(),
+            "hdmi_connected": (get_hdmi_status() == "connected"),
+            "modes": get_hdmi_modes(),
+            "config": load_config()
+        }
+        print(json.dumps(st, indent=2))
+    elif args.action == "apply":
+        ok, msg = apply_display_config()
+        print(msg)
+        sys.exit(0 if ok else 1)
+    elif args.action == "restore":
+        ok, msg = apply_display_config({"hdmi_mode": "internal_only"})
+        print(msg)
+        sys.exit(0 if ok else 1)
+    elif args.action == "set":
+        cfg = load_config()
+        if args.mode:
+            cfg["hdmi_mode"] = args.mode
+        if args.position:
+            cfg["extend_position"] = args.position
+        if args.scale:
+            cfg["hdmi_scale"] = args.scale
+        save_config(cfg)
+        ok, msg = apply_display_config(cfg)
+        print(f"Salvato. {msg}")
+        sys.exit(0 if ok else 1)
+
+if __name__ == "__main__":
+    main()

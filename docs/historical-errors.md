@@ -185,6 +185,27 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On SoC platforms with UART/serdev Broadcom Bluetooth, always verify whether the kernel driver expects a generic `.hcd` alias rather than vendor-tagged firmware filenames. Ensure default-off power management services do not cut radio power concurrently during active driver baudrate negotiation.
 
+---
 
+## 10. Libadwaita Pango Markup Escaping & Dynamic Wayland Display Hotplug Handling
 
-
+- **Date**: 2026-09-08
+- **Subsystem**: Settings Application / Multi-Display Topologies / GTK4 & Libadwaita (`wlr-randr`, `AdwActionRow`, `Pango`)
+- **Symptoms**:
+  - Gtk-WARNING and Adwaita-CRITICAL logs when populating `Adw.ActionRow` titles:
+    ```text
+    Failed to set text 'Salva & Applica' from markup: Entity did not end with a semicolon; most likely you used an ampersand character without intending to start an entity
+    ```
+  - Running `wlr-randr --output HDMI-A-1 ...` fails with `unknown output HDMI-A-1` when the external cable is physically unplugged.
+  - Python single-window GTK apps hang or fail to emit `"activate"` signal when launched with `sys.argv` containing the full script path without explicit command-line handling.
+- **Root Cause**:
+  1. *Pango Markup by Default*: Libadwaita `AdwActionRow.set_title()` treats strings as Pango markup. Bare ampersands (`&`) trigger XML/Pango entity resolution and fail if unescaped.
+  2. *Wlroots Output Lifetime*: Under MangoWC / wlroots, video connectors (e.g. `HDMI-A-1`) are dynamically instantiated. When disconnected, wlroots removes the output from the compositor graph, causing direct `wlr-randr` configuration commands targeting `HDMI-A-1` to fail.
+  3. *GApplication Invocation*: Passing non-empty `sys.argv` to `Adw.Application.run()` invokes option parsing which may consume arguments or defer activation if GApplication flags are unconfigured.
+- **Resolution**:
+  1. Replace unescaped ampersands (`&`) with plain text ("e") or `&amp;` in all Libadwaita titles and subtitles.
+  2. Implement a dedicated display manager (`bin/yogabook-display-mgr`) that inspects `/sys/class/drm/card0-HDMI-A-1/status` prior to invoking `wlr-randr`, and store the user's preferred layout (Mirroring, Extend, Solo external, Solo internal) in `~/.config/yogabook/display.json`.
+  3. Hook HDMI connector status changes into the existing low-overhead autorotate monitoring loop (`yogabook-autorotate`) for instant automatic layout application upon cable connection/disconnection.
+  4. Use `app.run([])` for standalone desktop tool utilities to guarantee direct `activate` signal emission.
+- **Prevention Pattern**:
+  Never assume Wayland video outputs exist persistently when cables are unplugged; always query DRM sysfs connector state before dispatching `wlr-randr` output rules. Always sanitize strings passed to GTK4/Libadwaita text setters to prevent Pango markup parser crashes.
