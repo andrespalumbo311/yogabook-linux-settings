@@ -3,15 +3,23 @@
 # Signals resident daemon via SIGUSR1 for <10ms launch time
 PIDFILE="/tmp/yogabook-launcher.pid"
 
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    kill -SIGUSR1 "$(cat "$PIDFILE" 2>/dev/null)"
-else
-    /home/andres/.local/bin/yogabook-launcher --daemon &
-    for i in {1..30}; do
-        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-            kill -SIGUSR1 "$(cat "$PIDFILE")"
-            break
-        fi
-        sleep 0.05
-    done
+# Attempt to signal the resident daemon directly
+if pkill -SIGUSR1 -f "python3.*yogabook-launcher" 2>/dev/null; then
+    exit 0
 fi
+
+# If daemon is not running, start it via systemd or background process
+if systemctl --user is-active --quiet yogabook-launcher.service; then
+    systemctl --user restart yogabook-launcher.service
+else
+    systemctl --user start yogabook-launcher.service 2>/dev/null || /home/andres/.local/bin/yogabook-launcher --daemon &
+fi
+
+# Wait briefly for daemon to respond to signal
+for _ in {1..20}; do
+    if pkill -SIGUSR1 -f "python3.*yogabook-launcher" 2>/dev/null; then
+        break
+    fi
+    sleep 0.05
+done
+

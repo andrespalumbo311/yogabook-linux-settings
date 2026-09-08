@@ -54,6 +54,8 @@ link_file "$REPO_DIR/config/mango/outputs.conf" "$HOME_DIR/.config/mango/outputs
 link_file "$REPO_DIR/config/mango/cursor.conf"  "$HOME_DIR/.config/mango/cursor.conf"
 link_file "$REPO_DIR/config/mango/binds.conf"   "$HOME_DIR/.config/mango/binds.conf"
 link_file "$REPO_DIR/config/user-dirs.dirs"    "$HOME_DIR/.config/user-dirs.dirs"
+link_file "$REPO_DIR/config/gtk-3.0/settings.ini" "$HOME_DIR/.config/gtk-3.0/settings.ini"
+link_file "$REPO_DIR/config/gtk-4.0/settings.ini" "$HOME_DIR/.config/gtk-4.0/settings.ini"
 
 # 3. GTK Touch Stack (Waybar, SwayNC, Wofi)
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config.jsonc"
