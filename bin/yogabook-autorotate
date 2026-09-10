@@ -20,8 +20,9 @@ Key Architectural Pillars:
      so lifting or tilting the laptop never triggers unwanted mode switches.
 
 3. Solid Hysteresis & Mode Debounce:
-   - Laptop mode: opening <= 150.0° with keyboard base facing up.
-   - Tablet / Flat mode: opening >= 158.0° (or inverted/tent posture).
+   - Laptop mode: opening <= 135.0° with keyboard base facing up.
+   - Tablet / Flat mode: opening >= 142.0° (calibrated to user active posture).
+   - Halo Keyboard: automatic deactivation & LED shutdown when opening >= 190.0° (extended beyond flat).
    - Debounce filter: requires 2 consecutive consistent cycles (~0.8s) to switch modes.
 
 4. Table Flat-Lock & Decisive Orientation Engine:
@@ -48,10 +49,181 @@ logging.basicConfig(
 DISPLAY = "DSI-1"
 DEFAULT_TRANSFORM = "270"
 STATE_FILE = f"/run/user/{os.getuid()}/yogabook-rotation.state"
+KBD_BACKLIGHT_SYSFS = "/sys/class/leds/ybwmi::kbd_backlight/brightness"
+
+# Hinge angle thresholds (in degrees)
+# Auto-rotation activates beyond active laptop opening angle (~142.5°)
+LAPTOP_MAX_OPENING = 142.0    # Opening >= 142.0° triggers tablet mode (auto-rotation)
+LAPTOP_ENTER_OPENING = 135.0  # Opening <= 135.0° returns to laptop mode (locked landscape)
+
+# Halo keyboard deactivation thresholds (extended beyond flat)
+KEYBOARD_DISABLE_ANGLE = 190.0  # Opening >= 190.0° disables keyboard & turns off backlight
+KEYBOARD_ENABLE_ANGLE = 180.0   # Opening <= 180.0° re-enables keyboard & restores backlight
 
 screen_dev = None
 base_dev = None
 current_mode = "laptop"
+
+class HaloKeyboardManager:
+    """
+    Manages the Halo Keyboard and touchpad states on the Yoga Book.
+    Suppresses input events and backlight when the device is extended beyond 190°.
+    Resilient to kernel/udev re-enumeration when reopening from 360° tablet mode.
+    """
+    def __init__(self):
+        self.is_disabled = False
+        self.grabbed_devices = []
+        self.saved_brightness = 255
+
+    def get_backlight(self):
+        try:
+            if os.path.exists(KBD_BACKLIGHT_SYSFS):
+                with open(KBD_BACKLIGHT_SYSFS, "r") as f:
+                    val = int(f.read().strip())
+                    return val if val > 0 else 255
+        except Exception:
+            pass
+        return 255
+
+    def set_backlight(self, val):
+        try:
+            if os.path.exists(KBD_BACKLIGHT_SYSFS):
+                with open(KBD_BACKLIGHT_SYSFS, "w") as f:
+                    f.write(str(val))
+        except Exception as e:
+            logging.debug(f"Failed to set kbd backlight: {e}")
+
+    def find_keyboard_devices(self):
+        kbd_nodes = []
+        for dev_path in sorted(glob.glob("/sys/class/input/event*")):
+            name_file = os.path.join(dev_path, "device", "name")
+            if os.path.exists(name_file):
+                try:
+                    with open(name_file, "r") as f:
+                        name = f.read().strip()
+                    if name in ("Goodix Capacitive TouchScreen", "virtual-keyboard", "virtual-touchpad"):
+                        ev_node = os.path.join("/dev", "input", os.path.basename(dev_path))
+                        kbd_nodes.append((ev_node, name))
+                except Exception:
+                    pass
+        return kbd_nodes
+
+    def maintain_disabled(self):
+        """
+        Continuously ensures the keyboard remains suppressed even if the kernel
+        or udev re-enumerates the Goodix digitizer and restarts touch-keyboard-handler
+        upon reopening from 360° tablet mode.
+        """
+        current_devs = dict(self.find_keyboard_devices())  # {path: name}
+
+        # 1. Clean up dead/stale device file descriptors
+        active_grabbed = []
+        for dev in self.grabbed_devices:
+            try:
+                if dev.path in current_devs:
+                    active_grabbed.append(dev)
+                else:
+                    try:
+                        dev.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        self.grabbed_devices = active_grabbed
+        grabbed_paths = {d.path for d in self.grabbed_devices}
+
+        # 2. Check if touch-keyboard-handler service is running
+        handler_running = False
+        try:
+            res = subprocess.run(
+                ["systemctl", "is-active", "--quiet", "touch-keyboard-handler.service"],
+                check=False
+            )
+            handler_running = (res.returncode == 0)
+        except Exception:
+            pass
+
+        # 3. Check for any ungrabbed keyboard nodes
+        ungrabbed = [p for p in current_devs if p not in grabbed_paths]
+
+        if handler_running or ungrabbed:
+            if handler_running:
+                logging.info("Stopping touch-keyboard-handler in disabled posture...")
+                try:
+                    subprocess.run(
+                        ["systemctl", "stop", "touch-keyboard-handler.service", "--no-ask-password"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                except Exception:
+                    pass
+
+            # Always ensure backlight remains off in disabled posture
+            self.set_backlight(0)
+
+            # Grab all ungrabbed nodes
+            try:
+                import evdev
+                for ev_node, name in self.find_keyboard_devices():
+                    if ev_node not in grabbed_paths:
+                        try:
+                            dev = evdev.InputDevice(ev_node)
+                            dev.grab()
+                            self.grabbed_devices.append(dev)
+                            grabbed_paths.add(ev_node)
+                            logging.info(f"Grabbed {name} on {ev_node} (suppressing input)")
+                        except Exception as e:
+                            logging.debug(f"Could not grab {ev_node} ({name}): {e}")
+            except ImportError:
+                logging.warning("evdev module not available for device grabbing")
+
+    def disable(self):
+        if not self.is_disabled:
+            logging.info("Disabling Halo Keyboard (opening >= 190.0°)...")
+            # 1. Save and turn off backlight
+            cur_bl = self.get_backlight()
+            if cur_bl > 0:
+                self.saved_brightness = cur_bl
+            self.set_backlight(0)
+            self.is_disabled = True
+
+        # Always actively maintain disabled state (reconcile against udev re-plugs)
+        self.maintain_disabled()
+
+    def enable(self):
+        if not self.is_disabled:
+            return
+        logging.info("Re-enabling Halo Keyboard (opening <= 180.0°)...")
+        # 1. Release all grabbed devices
+        for dev in self.grabbed_devices:
+            try:
+                dev.ungrab()
+                dev.close()
+            except Exception as e:
+                logging.debug(f"Error ungrabbing device: {e}")
+        self.grabbed_devices = []
+
+        # 2. Restart system service if it was stopped
+        try:
+            subprocess.run(
+                ["systemctl", "start", "touch-keyboard-handler.service", "--no-ask-password"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
+
+        # 3. Restore backlight
+        restore_val = self.saved_brightness if self.saved_brightness > 0 else 255
+        self.set_backlight(restore_val)
+        self.is_disabled = False
+
+    def cleanup(self):
+        self.enable()
+
+kbd_mgr = HaloKeyboardManager()
 
 def write_state(mode, transform="270"):
     try:
@@ -62,6 +234,10 @@ def write_state(mode, transform="270"):
 
 def cleanup(*args):
     logging.info("Shutting down yogabook-autorotate...")
+    try:
+        kbd_mgr.cleanup()
+    except Exception:
+        pass
     try:
         if os.path.exists(STATE_FILE):
             os.remove(STATE_FILE)
@@ -157,30 +333,42 @@ def get_posture(s, b, cur_mode):
     # perpendicular components vanish. Accelerometers cannot measure hinge opening.
     # Preserve current mode to prevent accidental flips when tilting/lifting the laptop!
     if perp_s < 0.35 and perp_b < 0.35:
-        return (cur_mode if cur_mode is not None else "tablet"), 0.0
+        return (cur_mode if cur_mode is not None else "tablet"), -1.0
 
     # True 2D opening angle in cross-section plane
     cross_2d = vs[0] * vb[1] - vs[1] * vb[0]
     dot_2d = vs[0] * vb[0] + vs[1] * vb[1]
     angle_2d = math.degrees(math.atan2(cross_2d, dot_2d))
-    opening = (180.0 - angle_2d) % 360.0
 
     # Base is resting horizontal/flat (keyboard facing up towards user/ceiling)
     base_is_flat = b[2] < -0.35 * nb
 
+    opening = 180.0 - angle_2d
+    if opening < 0.0:
+        opening += 360.0
+    elif opening > 360.0:
+        opening -= 360.0
+
+    # Branch cut guard at 360° (folded back-to-back):
+    # When folded around 360°, sensor noise near angle_2d = ±180° can cause
+    # opening to fluctuate around 0° / 360°. If the base is inverted (keyboard facing down)
+    # or the device is already in tablet mode, an opening near 0° is physically 360° (tablet).
+    if opening < 45.0 and (not base_is_flat or cur_mode == "tablet"):
+        opening = 360.0 - opening
+
     if cur_mode == "laptop":
-        # Exit laptop mode if opened wide (>= 158°) or base clearly flipped
-        if opening >= 158.0 or not base_is_flat:
+        # Exit laptop mode if opened wide (>= LAPTOP_MAX_OPENING) or base clearly flipped
+        if opening >= LAPTOP_MAX_OPENING or not base_is_flat:
             return "tablet", opening
         return "laptop", opening
     elif cur_mode == "tablet":
-        # Enter laptop mode if base is resting flat and opening is in laptop range (<= 150°)
-        if base_is_flat and opening <= 150.0:
+        # Enter laptop mode if base is resting flat and opening is in laptop range (<= LAPTOP_ENTER_OPENING)
+        if base_is_flat and opening <= LAPTOP_ENTER_OPENING:
             return "laptop", opening
         return "tablet", opening
     else:
         # Initial posture check at startup
-        if base_is_flat and opening <= 154.0:
+        if base_is_flat and opening <= ((LAPTOP_MAX_OPENING + LAPTOP_ENTER_OPENING) / 2.0):
             return "laptop", opening
         return "tablet", opening
 
@@ -307,6 +495,9 @@ def main():
         apply_transform(DEFAULT_TRANSFORM)
         write_state("laptop", DEFAULT_TRANSFORM)
 
+    if initial_opening >= KEYBOARD_DISABLE_ANGLE:
+        kbd_mgr.disable()
+
     mode_debounce_target = None
     mode_debounce_count = 0
     MODE_DEBOUNCE_THRESHOLD = 2  # 2 cycles (0.8s) to confirm mode transitions
@@ -338,6 +529,13 @@ def main():
                 continue
 
             detected_mode, opening = get_posture(s, b, current_mode)
+
+            # Manage Halo Keyboard state based on opening angle (when not in singularity)
+            if opening >= 0:
+                if opening >= KEYBOARD_DISABLE_ANGLE:
+                    kbd_mgr.disable()
+                elif opening <= KEYBOARD_ENABLE_ANGLE:
+                    kbd_mgr.enable()
 
             # Debounce mode transitions
             if detected_mode != current_mode:

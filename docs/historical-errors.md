@@ -281,3 +281,137 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On legacy low-power SoCs with partial or experimental Vulkan support (e.g. Intel Gen7/Gen8, early Mali), never allow toolkits to default to Vulkan. Always lock the graphical stack to mature OpenGL drivers with persistent on-disk shader caching, and sanitize portal definitions to eliminate D-Bus roundtrip delays.
 
+---
+
+## 14. Missing X11 Display Environment Variable in Systemd App Launcher Daemons
+
+- **Date**: 2026-09-08
+- **Subsystem**: Application Lifecycle / Wayland Compositor / Xwayland / Systemd User Sessions
+- **Symptoms**:
+  - Certain graphical applications (e.g. `readest`, CEF/Electron apps, legacy X11 utilities) fail to start when launched from custom desktop shell launchers or application drawers, while launching normally when run directly from an interactive terminal emulator.
+  - Journal logs show immediate application crash/panic on startup:
+    ```text
+    thread 'main' panicked at ...:
+    error while running tauri application: Runtime(CreateWindow)
+    ```
+- **Root Cause**:
+  1. *Dual Display Server Requirement*: Many modern Linux application frameworks (such as Tauri using Chromium Embedded Framework `tauri_runtime_cef` or older Electron builds) rely on X11/Xwayland (`winit_x11`) on Linux rather than native Wayland interfaces. They require an active `DISPLAY` environment variable (e.g. `DISPLAY=:0`).
+  2. *Asynchronous Session Environment Activation*: When an application drawer daemon (e.g. `yogabook-launcher.service`) runs as an early systemd user unit, it may be instantiated before the Wayland compositor completes `dbus-update-activation-environment --systemd --all`. Furthermore, systemd user services do not automatically inherit dynamic environment changes made after their startup unless explicitly restarted.
+3. *Unset Child Environment*: If the launcher daemon's unit file only specifies `Environment=WAYLAND_DISPLAY=wayland-0` and the launcher uses `Gio.DesktopAppInfo.launch()` without passing an explicitly populated `GAppLaunchContext`, all child processes inherit an environment devoid of `DISPLAY`. When an Xwayland-dependent app starts, it cannot connect to `:0` and immediately terminates.
+  4. *Daemon Preload Pollution*: Custom layer-shell daemons utilizing `LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so` leak that variable into child processes unless explicitly stripped. When child applications using GTK 3 or hybrid frameworks (e.g. CEF in Readest) are launched, the dynamic linker loads both GTK 4 and GTK 3 into the same address space, resulting in immediate symbol collisions (`gdk_display_manager_get`) and `SIGABRT` core dumps.
+- **Resolution**:
+  1. In systemd service units for UI shells and launchers (`yogabook-launcher.service`, `yogabook-control-center.service`), explicitly define both `Environment=WAYLAND_DISPLAY=wayland-0` and `Environment=DISPLAY=:0`.
+  2. Implement defensive defaults within the launcher daemon code (`os.environ.setdefault("DISPLAY", ":0")` and `os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")`).
+  3. Strip `LD_PRELOAD` immediately after importing shell libraries (`os.environ.pop("LD_PRELOAD", None)`).
+  4. When invoking `item.app_info.launch(files, launch_context)`, construct and pass a `GdkAppLaunchContext` where `DISPLAY` and `WAYLAND_DISPLAY` are explicitly forwarded and `ctx.unsetenv("LD_PRELOAD")` is enforced.
+- **Prevention Pattern**:
+  In Wayland desktop environments supporting Xwayland, always ensure that custom launcher daemons, notification runners, and application spawners explicitly hold and propagate both Wayland (`WAYLAND_DISPLAY`) and X11 (`DISPLAY`) environment variables to child processes, while strictly isolating daemon-specific hooks (`LD_PRELOAD`).
+
+---
+
+## 15. Silent Deactivation of Input Emulation in Network KVM Daemons (Lan Mouse)
+
+- **Date**: 2026-09-08
+- **Subsystem**: Input Emulation / Wayland Protocols / Network KVM (`lan-mouse`, `zwlr_virtual_pointer_v1`)
+- **Symptoms**:
+  - `lan-mouse` connects to network clients, but incoming mouse and keyboard events from remote devices fail to move the local cursor or register keystrokes.
+  - Lan Mouse daemon remains alive in systemd (`active (running)`), but internally drops its wlroots emulation thread after Wayland socket disconnects or pipe errors (`Broken pipe (os error 32)`).
+  - The daemon does not restart automatically because the primary process did not terminate.
+- **Root Cause**:
+  `lan-mouse daemon` isolates its input emulation subroutines. If the Wayland compositor triggers an unhandled event (or pipe reset during auto-rotate, sleep, or config reload), the emulation thread terminates silently and marks emulation as disabled without exiting the main daemon. Remote devices trying to send input receive `"emulation is disabled on the target device"`.
+- **Resolution**:
+  1. Provide a recovery utility (`bin/fix-lan-mouse`) that queries the daemon via IPC (`lan-mouse cli enable-emulation`, `lan-mouse cli enable-capture`, `lan-mouse cli activate 0`) or restarts the unit if unresponsive.
+  2. Map a global shortcut (`bind=SUPER,m,spawn,.../fix-lan-mouse`) in `config/mango/binds.conf` for instantaneous manual recovery.
+- **Prevention Pattern**:
+  Long-running input emulation daemons that lack internal auto-reconnect loops on Wayland socket errors should be equipped with low-latency IPC recovery hooks or supervisory watchdog checks.
+
+
+---
+
+## 16. Compositor-Level Multi-Finger Gesture Incompatibility with Network KVM Input Capture
+
+- **Date**: 2026-09-09
+- **Subsystem**: Wayland Input Capture / Touchpad Gestures / Network KVM (`lan-mouse`, `layer-shell`, `libinput`)
+- **Symptoms**:
+  - Multi-finger touchpad gestures (e.g. 3-finger horizontal or vertical swipe) performed on the primary host touchpad fail to register on the remote client even when the pointer has transitioned onto the remote display via Lan Mouse.
+  - Instead, the host compositor consumes the gesture, unexpectedly switching windows or workspaces on the host machine.
+- **Root Cause**:
+  1. *Compositor Gesture Interception*: Multi-finger touchpad gestures (`libinput` swipe events) are intercepted and processed by Wayland compositors (like Niri or GNOME) directly at the compositor level as global actions. They are not routed to client application surfaces.
+  2. *Capture & Emulation Protocol Constraints*: Network KVM capture mechanisms (`layer-shell` or `InputCapture` portal) only expose standard `wl_pointer` events (cursor motion, button clicks, two-finger scroll axis) and `wl_keyboard` keys. Neither `layer-shell` nor the network KVM protocol serializes or forwards multi-touch touchpad swipe gestures (`zwp_pointer_gestures_v1`).
+- **Resolution**:
+  1. In the client compositor's configuration (`binds.conf`), map window scrolling and workspace switching to modifier-assisted axis events (`axisbind=SUPER,LEFT/RIGHT,focusdir` and `axisbind=SUPER,UP/DOWN,viewto{left,right}`). Two-finger scrolling generates standard `wl_pointer.axis` events that are cleanly captured and forwarded across the network KVM bridge.
+  2. Provide standard keyboard shortcuts (`SUPER+H/J/K/L` or `SUPER+Arrows`) for remote navigation.
+  3. Reserve native multi-finger swipe gestures strictly for physical interaction on the client machine's local touchpad.
+- **Prevention Pattern**:
+  In multi-device software KVM setups, never expect raw multi-finger touchpad swipe gestures to traverse Wayland compositor boundaries. Always establish dual-mapping parity using modifier-assisted pointer axis events (`Mod + Axis`) and keyboard bindings to ensure remote navigability.
+
+---
+
+## 17. Magnetic Hall Sensor Blind Zone in 2-in-1 Convertible Tablets & Evdev Input Suppression
+
+- **Date**: 2026-09-09
+- **Subsystem**: Input Subsystem / Hinge Angle Detection / Sensor Fusion (`evdev`, `udev`, `lenovo-yogabook`, `Goodix-TS`)
+- **Symptoms**:
+  - Extending or holding a convertible 2-in-1 device beyond flat tablet orientation (e.g. $> 190^\circ$ up to $350^\circ$, tent mode, or easel mode) leaves the bottom capacitive touch keyboard active.
+  - Fingers supporting the device from behind trigger accidental keypresses, cursor jumps, and haptic motor vibrations.
+  - The keyboard LED backlight remains illuminated on the rear surface, wasting battery.
+- **Root Cause**:
+  1. *Hardware Hall Sensor Proximity Limit*: Low-level kernel drivers (e.g. `lenovo_yogabook`) bind tablet mode deactivation strictly to magnetic lid/backside Hall switches (`backside_hall_sw`). Because the magnetic field drops off rapidly ($1/r^3$), Hall sensors only fire at complete $360^\circ$ physical contact. At intermediate angles ($180^\circ - 350^\circ$), the hardware sensor is blind.
+  2. *Driver Coupling*: Without an accelerometer-aware daemon actively suppressing input, the touch controller continues feeding touch coordinates to userspace handlers (`touch_keyboard_handler`).
+- **Resolution**:
+  1. Calibrate real-time hinge angles in userspace using dual-accelerometer 2D cross-section projection (`bin/yogabook-autorotate`).
+  2. Define an explicit deactivation threshold (`opening >= 190.0°`) with an 10° hysteresis window (`opening <= 180.0°`).
+  3. Deploy udev access rules (`TAG+="uaccess"`, `GROUP="video"`) in `/etc/udev/rules.d/62-yogabook-keyboard.rules` allowing the user session to open and exclusively grab (`EVIOCGRAB` via `python-evdev`) the touch digitizer and virtual input nodes, and install a polkit rule (`49-yogabook-keyboard.rules`) for non-blocking supervisor control.
+  4. Acquire exclusive evdev grabs on the physical touch controller (`Goodix Capacitive TouchScreen`) and virtual nodes to block all keystrokes, mouse moves, and haptic vibrations without tearing down compositor devices.
+  5. Extinguish LED illumination via sysfs (`/sys/class/leds/ybwmi::kbd_backlight/brightness = 0`) on fold, and restore saved levels on unfolding.
+- **Prevention Pattern**:
+  Never rely solely on magnetic Hall effect switches for peripheral deactivation across the continuous hinge lifecycle of 2-in-1 convertibles. Combine continuous accelerometer hinge measurement with non-destructive userspace exclusive grabs (`EVIOCGRAB`) and sysfs power/backlight controls.
+
+---
+
+## 18. Unstripped ANSI Terminal Escape Codes in CLI Output Wrappers & Pango Glyph Corruption
+
+- **Date**: 2026-09-10
+- **Subsystem**: Settings Application / CLI Interop / Pango Layout / Wireless GUI (`iwctl`, `iwd`, `bluetoothctl`, `Libadwaita`, `GTK4`)
+- **Symptoms**:
+  - Wi-Fi network lists in desktop settings app display corrupted SSID names, table headers appearing as networks, and strange characters or square tofu boxes (`[001B]`).
+  - Connecting to new networks fails silently, drops credentials, or opens external terminal emulators that immediately terminate.
+  - Repeatedly scanning networks duplicates rows and accumulates stale UI elements.
+- **Root Cause**:
+  1. *Unconditional ANSI Formatting*: Low-level network utilities (such as `iwctl`) emit ANSI color and cursor formatting codes (`\x1b[1;90m`, `\x1b[0m`, `\x1b[90m`) unconditionally across subprocess pipes.
+  2. *Column Shift via Naive Splitting*: Tokenizing raw outputs via `re.split(r'\s{2,}', line)` breaks when spaces within or adjacent to ANSI sequences fragment table lines. In `iwctl`, connection markers (`>`) followed by ANSI codes shift actual network SSIDs into signal strength columns and turn header rows into fake network entries.
+  3. *Tofu Glyph Rendering*: Non-printable control bytes (`0x1B` ESC) have no glyph representations in standard typography (`Adwaita Sans`), causing Pango to render missing glyph tofu boxes with hexadecimal indices (`[001B]`).
+  4. *External Terminal Spawning on Touch Devices*: Spawning `foot -e iwctl station wlan0 connect <SSID>` bypasses native authentication flows, fails to trigger on-screen virtual keyboards (`wvkbd`) on touch devices, and closes instantly on handshake failure.
+  5. *Unmanaged Row Accumulation*: `Adw.PreferencesGroup` retains previously added children unless explicitly tracked and removed via `group.remove(row)`.
+- **Resolution**:
+  1. Filter all CLI output streams through a universal ANSI stripping regex (`re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')`) before string parsing.
+  2. Parse columns dynamically based on header index boundaries (`header.find("Security")`, `header.find("Signal")`) and request numerical signal metrics (`rssi-dbms`).
+  3. Map signal strengths to standard desktop symbolic icons (`network-wireless-signal-*-symbolic` and secure variants) and format human-readable percentage and dBm subtitles.
+  4. Replace external terminal popups with native Libadwaita dialogs (`Adw.AlertDialog` with `Adw.PasswordEntryRow`) and execute non-blocking connections using `iwctl --dont-ask --passphrase <key> station <wlan> connect <SSID>`.
+  5. Maintain dynamic row tracking arrays (`self.network_rows`, `self.bluetooth_rows`) and systematically clear child widgets before re-populating preference groups.
+  6. Sanitize dynamic text and eliminate non-native typographical symbols (`®`, `™`, raw Unicode bullet dots) using `GLib.markup_escape_text()`.
+- **Prevention Pattern**:
+  Never ingest CLI utility outputs into graphical interfaces without explicitly stripping ANSI escape sequences. Always employ header-indexed positional slicing rather than greedy space-splitting on tabular terminal output, and manage authentication state via native modal dialogs rather than spawning interactive terminal wrappers.
+
+---
+
+## 19. Peripheral Re-Enumeration & State Inconsistency Across Hardware Hall Switch Boundaries
+
+- **Date**: 2026-09-10
+- **Subsystem**: Input Subsystem / Convertible Hardware States / Daemon Lifecycle (`udev`, `systemd`, `Goodix-TS`, `touch_keyboard_handler`, `yogabook-autorotate`)
+- **Symptoms**:
+  - Folding the device into full tablet mode ($360^\circ$) and then partially reopening it while remaining in tablet posture ($> 190^\circ$) causes the capacitive touch keyboard to unexpectedly re-enable.
+  - The keyboard LED backlight remains extinguished, but touches on the rear capacitive surface register keypresses and pointer movement.
+- **Root Cause**:
+  1. *Hardware Hall Switch Power Cycling*: At $360^\circ$, physical contact activates the backside Hall effect switch, causing the kernel to unbind/power-down the touch controller (`i2c-GDIX1001:00`), destroying the existing evdev input node.
+  2. *Asynchronous Udev Re-Triggering*: When partially reopening past $360^\circ$ (e.g. at $250^\circ$), the magnet disengages and the kernel re-enumerates the controller, generating a new `/dev/input/event*` node. The system udev rule (`60-touch-keyboard.rules`) matches the new device and asynchronously triggers `systemctl start touch-keyboard-handler.service`.
+  3. *Static One-Shot State Assumptions*: In the autorotation daemon (`yogabook-autorotate`), `HaloKeyboardManager.disable()` used a one-shot guard (`if self.is_disabled: return`). Because the posture was already marked disabled, the daemon ignored the newly spawned background service, failed to grab the newly created evdev node, and held stale file descriptors from the previous instance.
+  4. *Trigonometric Discontinuity at $360^\circ$*: At the $\pm 180^\circ$ branch cut of `atan2`, tiny sensor jitter at $360^\circ$ folded back-to-back caused `opening = (180 - angle_2d) % 360` to oscillate to $0.0^\circ$, falsely triggering `enable()` before flipping back to $> 190^\circ$.
+- **Resolution**:
+  1. Transform `HaloKeyboardManager.disable()` from a passive one-shot flag into an active reconciliation loop (`maintain_disabled()`): on every cycle while in disabled posture, verify whether `touch-keyboard-handler.service` has been started by udev or if ungrabbed keyboard nodes exist in `/dev/input/`, stopping the service and acquiring `evdev.grab()` on new nodes immediately.
+  2. In `get_posture()`, implement a branch cut guard for angles near $360^\circ$: when the base is flipped (`base_is_flat == False`) or the system is in tablet mode, map opening angles near $0^\circ$ to $360^\circ$, preventing false drops below $180^\circ$.
+- **Prevention Pattern**:
+  In convertible systems where hardware switches dynamically power-cycle or destroy peripheral buses, never rely on one-shot state flags for peripheral suppression. Always implement active state reconciliation that continuously verifies device existence, grabs, and background service states against the active physical posture.
+
+
+

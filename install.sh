@@ -47,6 +47,7 @@ link_file "$REPO_DIR/bin/yogabook-settings"    "$HOME_DIR/.local/bin/yogabook-se
 link_file "$REPO_DIR/bin/yogabook-display-mgr" "$HOME_DIR/.local/bin/yogabook-display-mgr"
 link_file "$REPO_DIR/bin/close-window"        "$HOME_DIR/.local/bin/close-window"
 link_file "$REPO_DIR/bin/zenity-askpass"      "$HOME_DIR/.local/bin/zenity-askpass"
+link_file "$REPO_DIR/bin/fix-lan-mouse"        "$HOME_DIR/.local/bin/fix-lan-mouse"
 link_file "$REPO_DIR/bin/xdg-user-dir"        "$HOME_DIR/.local/bin/xdg-user-dir"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
@@ -109,7 +110,13 @@ if [[ "${1:-}" == "--system" ]]; then
     fi
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" /etc/udev/rules.d/60-mmc-readahead.rules
-        sudo udevadm control --reload-rules && sudo udevadm trigger || true
+    fi
+    if [ -f "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" /etc/udev/rules.d/62-yogabook-keyboard.rules
+    fi
+    sudo udevadm control --reload-rules && sudo udevadm trigger /dev/input/event* || true
+    if [ -f "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" /etc/polkit-1/rules.d/49-yogabook-keyboard.rules
     fi
     sudo sysctl --system >/dev/null || true
     sudo systemctl daemon-reload || true
