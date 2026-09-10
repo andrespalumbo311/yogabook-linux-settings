@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Instant fix / re-enable input emulation for Lan Mouse on Yoga Book
+if ! lan-mouse cli enable-emulation 2>/dev/null; then
+    systemctl --user restart lan-mouse.service
+    sleep 0.5
+    lan-mouse cli enable-emulation 2>/dev/null
+fi
+lan-mouse cli enable-capture 2>/dev/null || true
+lan-mouse cli activate 0 2>/dev/null || true
+notify-send -t 1500 "Lan Mouse" "Emulazione input ripristinata"

@@ -18,6 +18,7 @@ import sys
 import os
 import re
 import json
+import time
 import warnings
 import subprocess
 import threading
@@ -35,6 +36,40 @@ HDMI_STATUS_PATH = "/sys/class/drm/card0-HDMI-A-1/status"
 ROTATION_STATE_PATH = f"/run/user/{os.getuid()}/yogabook-rotation.state"
 GTK4_SETTINGS_PATH = os.path.expanduser("~/.config/gtk-4.0/settings.ini")
 GTK3_SETTINGS_PATH = os.path.expanduser("~/.config/gtk-3.0/settings.ini")
+
+ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+def strip_ansi(text: str) -> str:
+    """Strip ANSI escape sequences from command outputs."""
+    if not text:
+        return ""
+    return ANSI_ESCAPE_RE.sub('', text)
+
+
+def safe_markup(text: str) -> str:
+    """Safely escape text for Libadwaita / Pango markup setters."""
+    if not text:
+        return ""
+    return GLib.markup_escape_text(str(text))
+
+
+def get_wifi_icon(dbm: float, is_secure: bool) -> str:
+    """Resolve standard symbolic icon based on dBm signal strength and security."""
+    if dbm >= -55:
+        level = "excellent"
+    elif dbm >= -67:
+        level = "good"
+    elif dbm >= -78:
+        level = "ok"
+    elif dbm >= -88:
+        level = "weak"
+    else:
+        return "network-wireless-signal-none-symbolic"
+
+    if is_secure:
+        return f"network-wireless-signal-{level}-secure-symbolic"
+    return f"network-wireless-signal-{level}-symbolic"
 
 
 class YogaBookSettingsApp(Adw.Application):
@@ -55,6 +90,23 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.set_title("Impostazioni Yoga Book")
         self.set_default_size(840, 580)
         self.set_search_enabled(True)
+
+        # Dynamic row trackers for clean re-renders
+        self.network_rows = []
+        self.bluetooth_rows = []
+
+        # Debounced slider queues
+        self.vol_debounce_timer = None
+        self.pending_vol = None
+        self.mic_debounce_timer = None
+        self.pending_mic = None
+        self.bright_debounce_timer = None
+        self.pending_bright = None
+        self.halo_debounce_timer = None
+        self.pending_halo = None
+
+        self.is_sink_muted = False
+        self.is_src_muted = False
 
         # Sync guards to prevent feedback loops on sliders during initialization
         self.syncing_display = True
@@ -85,7 +137,13 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self._populate_available_networks()
         self._refresh_bluetooth_devices()
         self._refresh_battery_metrics()
+        GLib.timeout_add_seconds(4, self._periodic_battery_timer)
         return GLib.SOURCE_REMOVE
+
+    def _periodic_battery_timer(self):
+        if self.get_visible():
+            self._refresh_battery_metrics()
+        return GLib.SOURCE_CONTINUE
 
     # =========================================================================
     # 1. DISPLAY & HDMI PAGE
@@ -171,7 +229,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         # --- Group B: Internal Display (DSI-1) ---
         group_dsi = Adw.PreferencesGroup()
         group_dsi.set_title("Schermo Integrato Yoga Book (DSI-1)")
-        group_dsi.set_description("Pannello IPS 10.1\" 1200x1920 calibrato a 270° in scala 1.5x (1280x800 logico)")
+        group_dsi.set_description("Pannello IPS 10.1 pollici 1200x1920 calibrato a 270° in scala 1.5x (1280x800 logico)")
 
         # Row 6: Screen Backlight Slider
         row_brightness = Adw.ActionRow()
@@ -193,12 +251,17 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         row_brightness.add_suffix(box_bright)
         group_dsi.add(row_brightness)
 
-        # Row 7: Auto-Rotation Status
+        # Row 7: Auto-Rotation Switch & Status
         self.row_rotation = Adw.ActionRow()
         self.row_rotation.set_title("Rotazione Automatica Postura")
         self.lbl_rotation_status = Gtk.Label(label="Caricamento...")
         self.lbl_rotation_status.add_css_class("dim-label")
         self.row_rotation.add_suffix(self.lbl_rotation_status)
+
+        self.switch_autorotate = Gtk.Switch()
+        self.switch_autorotate.set_valign(Gtk.Align.CENTER)
+        self.switch_autorotate.connect("notify::active", self._on_autorotate_toggled)
+        self.row_rotation.add_suffix(self.switch_autorotate)
 
         btn_restart_rot = Gtk.Button(icon_name="view-refresh-symbolic")
         btn_restart_rot.set_valign(Gtk.Align.CENTER)
@@ -268,10 +331,10 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 pass
 
         if status == "connected":
-            self.lbl_hdmi_status.set_markup("<span foreground='#1a7f37' weight='bold'>● Collegato</span>")
+            self.lbl_hdmi_status.set_markup("<span foreground='#2ec27e' weight='bold'>Collegato</span>")
             self.row_hdmi_status.set_subtitle("Dispositivo HDMI esterno rilevato e pronto.")
         else:
-            self.lbl_hdmi_status.set_markup("<span foreground='#57606a'>○ Non collegato</span>")
+            self.lbl_hdmi_status.set_markup("<span foreground='#868686'>Non collegato</span>")
             self.row_hdmi_status.set_subtitle("Nessun cavo Micro-HDMI rilevato.")
 
     def _save_and_apply_hdmi(self):
@@ -311,10 +374,14 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.btn_apply_hdmi.set_sensitive(True)
         self.btn_apply_hdmi.set_label("Applica Ora")
         self._refresh_hdmi_status()
+        if success:
+            self.add_toast(Adw.Toast.new("Configurazione display applicata"))
+        else:
+            self.add_toast(Adw.Toast.new(f"Errore HDMI: {msg or 'Monitor non rilevato'}"))
 
     def _load_screen_brightness(self):
         try:
-            res = subprocess.run(["brightnessctl", "get"], capture_output=True, text=True, check=False)
+            res = subprocess.run(["brightnessctl", "--device=intel_backlight", "get"], capture_output=True, text=True, check=False)
             val = int(res.stdout.strip())
             self.scale_bright.set_value(val)
             self.lbl_bright_val.set_text(f"{val}%")
@@ -325,27 +392,67 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         val = int(scale.get_value())
         self.lbl_bright_val.set_text(f"{val}%")
         if not self.syncing_display:
-            subprocess.run(["brightnessctl", "set", f"{val}%"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            self.pending_bright = val
+            if self.bright_debounce_timer is None:
+                self.bright_debounce_timer = GLib.timeout_add(30, self._apply_pending_brightness)
+
+    def _apply_pending_brightness(self):
+        if self.pending_bright is not None:
+            v = self.pending_bright
+            self.pending_bright = None
+            threading.Thread(
+                target=lambda: subprocess.run(
+                    ["brightnessctl", "--device=intel_backlight", "set", f"{v}%"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                ),
+                daemon=True
+            ).start()
+        self.bright_debounce_timer = None
+        return GLib.SOURCE_REMOVE
 
     def _refresh_rotation_state(self):
-        sub = "Sensori attivi"
-        if os.path.exists(ROTATION_STATE_PATH):
-            try:
-                with open(ROTATION_STATE_PATH, "r") as f:
-                    content = f.read()
-                    props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
-                    mode = props.get("mode", "laptop")
-                    tr = props.get("transform", "270")
-                    if mode == "laptop":
-                        sub = f"Bloccata (Modalità Laptop) | {tr}°"
-                    else:
-                        sub = f"Attiva (Modalità Tablet) | {tr}°"
-            except Exception:
-                pass
-        self.lbl_rotation_status.set_text(sub)
+        is_active = False
+        try:
+            res = subprocess.run(["systemctl", "--user", "is-active", "rot8.service"], capture_output=True, text=True, check=False)
+            is_active = (res.stdout.strip() == "active")
+        except Exception:
+            pass
+
+        if hasattr(self, "switch_autorotate"):
+            self.switch_autorotate.set_active(is_active)
+
+        if is_active:
+            sub = "Sensori attivi"
+            if os.path.exists(ROTATION_STATE_PATH):
+                try:
+                    with open(ROTATION_STATE_PATH, "r") as f:
+                        content = f.read()
+                        props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
+                        mode = props.get("mode", "laptop")
+                        tr = props.get("transform", "270")
+                        if mode == "laptop":
+                            sub = f"Bloccata (Modalità Laptop) | {tr}°"
+                        else:
+                            sub = f"Attiva (Modalità Tablet) | {tr}°"
+                except Exception:
+                    pass
+            self.lbl_rotation_status.set_text(sub)
+            self.row_manual_rot.set_sensitive(False)
+            self.row_manual_rot.set_subtitle("Disabilita la rotazione automatica per forzare un orientamento manuale")
+        else:
+            self.lbl_rotation_status.set_text("Disattivata (Manuale)")
+            self.row_manual_rot.set_sensitive(True)
+            self.row_manual_rot.set_subtitle("Forza una specifica rotazione sul display integrato")
+
+    def _on_autorotate_toggled(self, switch, param):
+        active = switch.get_active()
+        cmd = ["start"] if active else ["stop"]
+        subprocess.run(["systemctl", "--user", cmd[0], "rot8.service"], check=False)
+        GLib.timeout_add(500, self._refresh_rotation_state)
 
     def _restart_rotation_daemon(self):
         subprocess.run(["systemctl", "--user", "restart", "rot8.service"], check=False)
+        self.add_toast(Adw.Toast.new("Demone sensori rotazione riavviato"))
         GLib.timeout_add(800, self._refresh_rotation_state)
 
     def _on_manual_rotation_changed(self, row, param):
@@ -354,7 +461,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         mapping = ["270", "180", "90", "normal"]
         target = mapping[row.get_selected()]
         subprocess.run(["wlr-randr", "--output", "DSI-1", "--transform", target], check=False)
-        self._refresh_rotation_state()
+        self.add_toast(Adw.Toast.new(f"Orientamento display: {target}"))
 
     # =========================================================================
     # 2. WI-FI PAGE
@@ -385,19 +492,27 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.lbl_wifi_detail = Gtk.Label(label="Caricamento...")
         self.lbl_wifi_detail.add_css_class("dim-label")
         self.row_active_wifi.add_suffix(self.lbl_wifi_detail)
-        group_wifi.add(self.row_active_wifi)
 
+        self.btn_active_disconnect = Gtk.Button(label="Disconnetti")
+        self.btn_active_disconnect.set_valign(Gtk.Align.CENTER)
+        self.btn_active_disconnect.add_css_class("destructive-action")
+        self.btn_active_disconnect.set_visible(False)
+        self.btn_active_disconnect.connect("clicked", lambda b: self._disconnect_wifi())
+        self.row_active_wifi.add_suffix(self.btn_active_disconnect)
+
+        group_wifi.add(self.row_active_wifi)
         page.add(group_wifi)
 
         # --- Group B: Available Networks ---
         self.group_networks = Adw.PreferencesGroup()
         self.group_networks.set_title("Reti Disponibili")
+        self.group_networks.set_description("Seleziona una rete per connetterti")
 
-        header_suffix = Gtk.Button(icon_name="view-refresh-symbolic")
-        header_suffix.set_valign(Gtk.Align.CENTER)
-        header_suffix.set_tooltip_text("Cerca reti Wi-Fi")
-        header_suffix.connect("clicked", lambda b: self._scan_wifi())
-        self.group_networks.set_header_suffix(header_suffix)
+        self.btn_scan_wifi = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.btn_scan_wifi.set_valign(Gtk.Align.CENTER)
+        self.btn_scan_wifi.set_tooltip_text("Cerca reti Wi-Fi")
+        self.btn_scan_wifi.connect("clicked", lambda b: self._scan_wifi())
+        self.group_networks.set_header_suffix(self.btn_scan_wifi)
 
         page.add(self.group_networks)
         self.add(page)
@@ -415,73 +530,321 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         cmd = ["rfkill", "unblock", "wifi"] if active else ["rfkill", "block", "wifi"]
         subprocess.run(cmd, check=False)
         GLib.timeout_add(1000, self._refresh_active_wifi)
+        GLib.timeout_add(1500, self._populate_available_networks)
 
     def _refresh_active_wifi(self):
         def _worker():
             try:
                 res = subprocess.run(["iwctl", "station", "wlan0", "show"], capture_output=True, text=True, check=False)
-                lines = res.stdout.splitlines()
-                ssid, ip, rssi, freq = "Non connesso", "--", "--", "--"
-                for l in lines:
-                    if "Connected network" in l:
-                        ssid = l.split(maxsplit=2)[-1].strip()
-                    elif "IPv4 address" in l:
-                        ip = l.split(maxsplit=2)[-1].strip()
-                    elif "RSSI" in l:
-                        rssi = l.split(maxsplit=2)[-1].strip()
-                    elif "Frequency" in l:
-                        freq = l.split(maxsplit=2)[-1].strip() + " MHz"
-                GLib.idle_add(self._update_active_wifi_ui, ssid, ip, rssi, freq)
-            except Exception:
-                pass
+                lines = strip_ansi(res.stdout).splitlines()
+                props = {}
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith("---") or line.startswith("Station:") or line.startswith("Settable"):
+                        continue
+                    m = re.match(r"^([A-Za-z0-9 ]+?)\s{2,}(.*)$", line)
+                    if m:
+                        props[m.group(1).strip()] = m.group(2).strip()
+
+                ssid = props.get("Connected network", "Non connesso")
+                ip = props.get("IPv4 address", "--")
+                rssi = props.get("RSSI", "--")
+                freq = props.get("Frequency", "--")
+                if freq != "--" and not freq.endswith("MHz"):
+                    freq = f"{freq} MHz"
+                sec = props.get("Security", "--")
+                state = props.get("State", "")
+
+                GLib.idle_add(self._update_active_wifi_ui, ssid, ip, rssi, freq, sec, state)
+            except Exception as e:
+                print(f"Error refreshing active wifi: {e}")
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _update_active_wifi_ui(self, ssid, ip, rssi, freq):
-        if ssid != "Non connesso":
-            self.row_active_wifi.set_title(f"Connesso a: {ssid}")
-            self.row_active_wifi.set_subtitle(f"IP: {ip}  |  Segnale: {rssi}  |  Freq: {freq}")
-            self.lbl_wifi_detail.set_markup("<span foreground='#1a7f37' weight='bold'>● Attivo</span>")
+    def _update_active_wifi_ui(self, ssid, ip, rssi, freq, sec, state):
+        if ssid != "Non connesso" and state in ("connected", "connecting"):
+            self.row_active_wifi.set_title(f"Connesso a: {safe_markup(ssid)}")
+            sub_parts = []
+            if ip != "--":
+                sub_parts.append(f"IP: {ip}")
+            if rssi != "--":
+                sub_parts.append(f"Segnale: {rssi}")
+            if freq != "--":
+                sub_parts.append(f"Freq: {freq}")
+            if sec != "--":
+                sub_parts.append(f"Sicurezza: {sec}")
+            self.row_active_wifi.set_subtitle("  •  ".join(sub_parts))
+            self.lbl_wifi_detail.set_markup("<span foreground='#2ec27e' weight='bold'>Attivo</span>")
+            if hasattr(self, "btn_active_disconnect"):
+                self.btn_active_disconnect.set_visible(True)
         else:
             self.row_active_wifi.set_title("Nessuna rete connessa")
             self.row_active_wifi.set_subtitle("Abilita il Wi-Fi o seleziona una rete dall'elenco sottostante.")
-            self.lbl_wifi_detail.set_markup("<span foreground='#57606a'>○ Disconnesso</span>")
+            self.lbl_wifi_detail.set_markup("<span foreground='#868686'>Disconnesso</span>")
+            if hasattr(self, "btn_active_disconnect"):
+                self.btn_active_disconnect.set_visible(False)
 
     def _scan_wifi(self):
+        if hasattr(self, "btn_scan_wifi"):
+            self.btn_scan_wifi.set_sensitive(False)
+
         def _worker():
             subprocess.run(["iwctl", "station", "wlan0", "scan"], check=False)
-            GLib.usleep(1500000)
-            GLib.idle_add(self._populate_available_networks)
+            time.sleep(1.5)
+            self._fetch_networks_and_known()
+
         threading.Thread(target=_worker, daemon=True).start()
 
     def _populate_available_networks(self):
-        def _worker():
-            try:
-                res = subprocess.run(["iwctl", "station", "wlan0", "get-networks"], capture_output=True, text=True, check=False)
-                lines = res.stdout.splitlines()
-                networks = []
-                for l in lines:
-                    parts = [p.strip() for p in re.split(r'\s{2,}', l) if p.strip()]
-                    if len(parts) >= 2 and not parts[0].startswith("Network") and not parts[0].startswith("---") and not parts[0].startswith("Available"):
-                        net_name = parts[0].replace(">", "").strip()
-                        sec = parts[1] if len(parts) > 1 else ""
-                        sig = parts[2] if len(parts) > 2 else ""
-                        if net_name and net_name not in [n[0] for n in networks]:
-                            networks.append((net_name, sec, sig))
-                GLib.idle_add(self._render_networks_list, networks)
-            except Exception:
-                pass
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=self._fetch_networks_and_known, daemon=True).start()
+
+    def _fetch_networks_and_known(self):
+        try:
+            # 1. Get known networks
+            res_known = subprocess.run(["iwctl", "known-networks", "list"], capture_output=True, text=True, check=False)
+            known_lines = strip_ansi(res_known.stdout).splitlines()
+            known_set = set()
+            for line in known_lines:
+                line = line.strip()
+                if not line or line.startswith("---") or "Known Networks" in line or line.startswith("Name"):
+                    continue
+                parts = re.split(r'\s{2,}', line)
+                if parts and parts[0]:
+                    known_set.add(parts[0].strip())
+
+            # 2. Get available networks with numerical dBm
+            res_nets = subprocess.run(["iwctl", "station", "wlan0", "get-networks", "rssi-dbms"], capture_output=True, text=True, check=False)
+            lines = strip_ansi(res_nets.stdout).splitlines()
+
+            sec_idx = 40
+            sig_idx = 60
+            networks = []
+            seen_names = set()
+
+            for line in lines:
+                if "Network name" in line:
+                    sec_idx = line.find("Security") if "Security" in line else 40
+                    sig_idx = line.find("Signal") if "Signal" in line else 60
+                    continue
+                if not line or line.startswith("---") or "Available networks" in line:
+                    continue
+                if len(line) > sec_idx:
+                    is_conn = ">" in line[:sec_idx]
+                    name = line[:sec_idx].replace(">", "").strip()
+                    sec = line[sec_idx:sig_idx].strip() if len(line) >= sig_idx else line[sec_idx:].strip()
+                    sig_str = line[sig_idx:].strip() if len(line) >= sig_idx else ""
+                    if name and name not in seen_names:
+                        seen_names.add(name)
+                        dbm = -100.0
+                        if sig_str:
+                            try:
+                                raw_val = int(sig_str)
+                                dbm = raw_val / 100.0 if abs(raw_val) > 1000 else float(raw_val)
+                            except ValueError:
+                                dbm = -75.0
+                        networks.append({
+                            "name": name,
+                            "connected": is_conn,
+                            "security": sec if sec else "open",
+                            "signal_dbm": dbm,
+                            "is_known": name in known_set
+                        })
+
+            # Sort networks: connected first, then known networks, then by signal strength descending
+            networks.sort(key=lambda n: (not n["connected"], not n["is_known"], -n["signal_dbm"]))
+            GLib.idle_add(self._render_networks_list, networks)
+        except Exception as e:
+            print(f"Error fetching networks: {e}")
+            GLib.idle_add(self._render_networks_list, [])
 
     def _render_networks_list(self, networks):
-        for net_name, sec, sig in networks[:6]:
+        if hasattr(self, "btn_scan_wifi"):
+            self.btn_scan_wifi.set_sensitive(True)
+
+        for row in self.network_rows:
+            self.group_networks.remove(row)
+        self.network_rows.clear()
+
+        if not networks:
             row = Adw.ActionRow()
-            row.set_title(net_name)
-            row.set_subtitle(f"Sicurezza: {sec}  |  Segnale: {sig}")
-            btn_conn = Gtk.Button(label="Connetti")
-            btn_conn.set_valign(Gtk.Align.CENTER)
-            btn_conn.connect("clicked", lambda b, n=net_name: subprocess.Popen(["foot", "-e", "iwctl", "station", "wlan0", "connect", n]))
-            row.add_suffix(btn_conn)
+            row.set_title("Nessuna rete Wi-Fi trovata")
+            row.set_subtitle("Premi il pulsante di scansione in alto per cercare reti disponibili.")
             self.group_networks.add(row)
+            self.network_rows.append(row)
+            return
+
+        for net in networks:
+            name = net["name"]
+            is_conn = net["connected"]
+            is_known = net["is_known"]
+            sec = net["security"]
+            dbm = net["signal_dbm"]
+            is_secure = (sec.lower() not in ("open", "none", ""))
+
+            pct = min(100, max(0, int(2 * (dbm + 100))))
+
+            row = Adw.ActionRow()
+            row.set_title(safe_markup(name))
+
+            sub_parts = []
+            if is_conn:
+                sub_parts.append("<span foreground='#2ec27e' weight='bold'>Connesso</span>")
+            elif is_known:
+                sub_parts.append("Memorizzata")
+            sub_parts.append(f"Sicurezza: {safe_markup(sec.upper())}")
+            sub_parts.append(f"Segnale: {pct}% ({int(dbm)} dBm)")
+            row.set_subtitle("  •  ".join(sub_parts))
+
+            icon_name = get_wifi_icon(dbm, is_secure)
+            icon = Gtk.Image.new_from_icon_name(icon_name)
+            icon.set_pixel_size(20)
+            row.add_prefix(icon)
+
+            if is_conn:
+                btn_disc = Gtk.Button(label="Disconnetti")
+                btn_disc.set_valign(Gtk.Align.CENTER)
+                btn_disc.add_css_class("destructive-action")
+                btn_disc.connect("clicked", lambda b: self._disconnect_wifi())
+                row.add_suffix(btn_disc)
+            else:
+                box_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                box_actions.set_valign(Gtk.Align.CENTER)
+
+                if is_known:
+                    btn_forget = Gtk.Button(icon_name="edit-delete-symbolic")
+                    btn_forget.set_valign(Gtk.Align.CENTER)
+                    btn_forget.set_tooltip_text("Dimentica rete")
+                    btn_forget.add_css_class("flat")
+                    btn_forget.connect("clicked", lambda b, n=name: self._forget_network(n))
+                    box_actions.append(btn_forget)
+
+                btn_conn = Gtk.Button(label="Connetti")
+                btn_conn.set_valign(Gtk.Align.CENTER)
+                if is_known:
+                    btn_conn.add_css_class("suggested-action")
+                btn_conn.connect("clicked", lambda b, n=name, k=is_known, s=is_secure, btn=btn_conn: self._start_connect_wifi(n, k, s, btn))
+                box_actions.append(btn_conn)
+
+                row.add_suffix(box_actions)
+
+            self.group_networks.add(row)
+            self.network_rows.append(row)
+
+    def _start_connect_wifi(self, ssid, is_known, is_secure, button):
+        if is_known or not is_secure:
+            self._connect_to_network(ssid, password=None, button=button)
+        else:
+            self._prompt_wifi_password(ssid, button)
+
+    def _prompt_wifi_password(self, ssid, button):
+        dialog = Adw.AlertDialog.new(
+            "Connessione a Rete Wi-Fi",
+            f"Inserisci la password per connetterti a '{ssid}'"
+        )
+        dialog.set_body_use_markup(False)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        list_box = Gtk.ListBox()
+        list_box.add_css_class("boxed-list")
+
+        entry = Adw.PasswordEntryRow()
+        entry.set_title("Password")
+        list_box.append(entry)
+        box.append(list_box)
+
+        dialog.set_extra_child(box)
+
+        dialog.add_response("cancel", "Annulla")
+        dialog.add_response("connect", "Connetti")
+        dialog.set_response_appearance("connect", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("connect")
+        dialog.set_close_response("cancel")
+
+        def _on_response(dlg, response):
+            if response == "connect":
+                pwd = entry.get_text()
+                if not pwd:
+                    self.add_toast(Adw.Toast.new("Password non inserita"))
+                    return
+                self._connect_to_network(ssid, password=pwd, button=button)
+
+        dialog.choose(self, None, _on_response)
+
+    def _connect_to_network(self, ssid, password=None, button=None):
+        if button:
+            button.set_sensitive(False)
+            button.set_label("Connessione...")
+
+        def _worker():
+            try:
+                cmd = ["iwctl", "--dont-ask"]
+                if password:
+                    cmd.extend(["--passphrase", password])
+                cmd.extend(["station", "wlan0", "connect", ssid])
+
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                stdout_clean = strip_ansi(res.stdout).strip()
+                stderr_clean = strip_ansi(res.stderr).strip()
+
+                success = (res.returncode == 0)
+                err_msg = stderr_clean or stdout_clean or "Password errata o timeout durante la connessione."
+
+                if success:
+                    time.sleep(1.5)
+
+                GLib.idle_add(self._on_connect_finished, ssid, success, err_msg, button)
+            except subprocess.TimeoutExpired:
+                GLib.idle_add(self._on_connect_finished, ssid, False, "Tempo scaduto durante la negoziazione Wi-Fi.", button)
+            except Exception as e:
+                GLib.idle_add(self._on_connect_finished, ssid, False, str(e), button)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_connect_finished(self, ssid, success, err_msg, button):
+        if button:
+            button.set_sensitive(True)
+            button.set_label("Connetti")
+
+        if success:
+            self.add_toast(Adw.Toast.new(f"Connesso con successo a '{ssid}'"))
+            self._refresh_active_wifi()
+            self._populate_available_networks()
+        else:
+            self.add_toast(Adw.Toast.new(f"Errore connessione a '{ssid}': {err_msg}"))
+
+    def _disconnect_wifi(self):
+        def _worker():
+            subprocess.run(["iwctl", "station", "wlan0", "disconnect"], check=False)
+            time.sleep(1.0)
+            def _ui():
+                self.add_toast(Adw.Toast.new("Rete Wi-Fi disconnessa"))
+                self._refresh_active_wifi()
+                self._populate_available_networks()
+            GLib.idle_add(_ui)
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _forget_network(self, ssid):
+        dialog = Adw.AlertDialog.new(
+            "Dimentica Rete Wi-Fi",
+            f"Vuoi davvero dimenticare le credenziali salvate per '{ssid}'?"
+        )
+        dialog.add_response("cancel", "Annulla")
+        dialog.add_response("forget", "Dimentica")
+        dialog.set_response_appearance("forget", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def _on_response(dlg, response):
+            if response == "forget":
+                subprocess.run(["iwctl", "known-networks", ssid, "forget"], check=False)
+                self.add_toast(Adw.Toast.new(f"Rete '{ssid}' dimenticata"))
+                self._populate_available_networks()
+
+        dialog.choose(self, None, _on_response)
 
     # =========================================================================
     # 3. BLUETOOTH PAGE
@@ -520,13 +883,14 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         # --- Group B: Paired & Known Devices ---
         self.group_bt_devices = Adw.PreferencesGroup()
-        self.group_bt_devices.set_title("Dispositivi Accoppiati")
+        self.group_bt_devices.set_title("Dispositivi Bluetooth")
+        self.group_bt_devices.set_description("Dispositivi accoppiati e rilevati nelle vicinanze")
 
-        btn_scan_bt = Gtk.Button(icon_name="view-refresh-symbolic")
-        btn_scan_bt.set_valign(Gtk.Align.CENTER)
-        btn_scan_bt.set_tooltip_text("Aggiorna dispositivi Bluetooth")
-        btn_scan_bt.connect("clicked", lambda b: self._refresh_bluetooth_devices())
-        self.group_bt_devices.set_header_suffix(btn_scan_bt)
+        self.btn_scan_bt = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.btn_scan_bt.set_valign(Gtk.Align.CENTER)
+        self.btn_scan_bt.set_tooltip_text("Cerca dispositivi Bluetooth")
+        self.btn_scan_bt.connect("clicked", lambda b: self._scan_bluetooth())
+        self.group_bt_devices.set_header_suffix(self.btn_scan_bt)
 
         page.add(self.group_bt_devices)
         self.add(page)
@@ -543,6 +907,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         active = switch.get_active()
         if active:
             subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
+            time.sleep(0.3)
             subprocess.run(["bluetoothctl", "power", "on"], check=False)
         else:
             subprocess.run(["bluetoothctl", "power", "off"], check=False)
@@ -554,38 +919,181 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         arg = "on" if active else "off"
         subprocess.run(["bluetoothctl", "discoverable", arg], check=False)
 
-    def _refresh_bluetooth_devices(self):
+    def _scan_bluetooth(self):
+        if hasattr(self, "btn_scan_bt"):
+            self.btn_scan_bt.set_sensitive(False)
+            self.btn_scan_bt.set_tooltip_text("Scansione in corso...")
+
         def _worker():
             try:
-                res = subprocess.run(["bluetoothctl", "devices"], capture_output=True, text=True, check=False)
-                devices = []
-                for line in res.stdout.splitlines():
-                    parts = line.strip().split(maxsplit=2)
-                    if len(parts) >= 3 and parts[0] == "Device":
-                        mac = parts[1]
-                        name = parts[2]
-                        devices.append((mac, name))
-                GLib.idle_add(self._update_bt_devices_ui, devices)
+                # Ensure rfkill unblocked
+                subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
+                time.sleep(0.2)
+                subprocess.run(["bluetoothctl", "power", "on"], check=False)
+                # Run scan for 6 seconds
+                subprocess.run(["bluetoothctl", "--timeout", "6", "scan", "on"], capture_output=True, text=True, check=False)
             except Exception:
                 pass
+            self._fetch_bt_devices()
+
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _refresh_bluetooth_devices(self):
+        threading.Thread(target=self._fetch_bt_devices, daemon=True).start()
+
+    def _fetch_bt_devices(self):
+        try:
+            # Query paired devices
+            res_paired = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True, check=False)
+            paired_macs = set()
+            for line in strip_ansi(res_paired.stdout).splitlines():
+                parts = line.strip().split(maxsplit=2)
+                if len(parts) >= 3 and parts[0] == "Device":
+                    paired_macs.add(parts[1])
+
+            # Query all available / discovered devices
+            res_all = subprocess.run(["bluetoothctl", "devices"], capture_output=True, text=True, check=False)
+            devices = []
+            seen = set()
+            for line in strip_ansi(res_all.stdout).splitlines():
+                parts = line.strip().split(maxsplit=2)
+                if len(parts) >= 3 and parts[0] == "Device":
+                    mac = parts[1]
+                    name = parts[2]
+                    if mac not in seen:
+                        seen.add(mac)
+                        devices.append((mac, name, mac in paired_macs))
+
+            # Sort: paired devices first
+            devices.sort(key=lambda d: (not d[2], d[1].lower()))
+            GLib.idle_add(self._update_bt_devices_ui, devices)
+        except Exception as e:
+            print(f"Error fetching bluetooth devices: {e}")
+            GLib.idle_add(self._update_bt_devices_ui, [])
+
     def _update_bt_devices_ui(self, devices):
+        if hasattr(self, "btn_scan_bt"):
+            self.btn_scan_bt.set_sensitive(True)
+            self.btn_scan_bt.set_tooltip_text("Cerca dispositivi Bluetooth")
+
+        for row in self.bluetooth_rows:
+            self.group_bt_devices.remove(row)
+        self.bluetooth_rows.clear()
+
+        # Check if bluetooth is powered off
+        try:
+            res = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
+            if "Soft blocked: yes" in res.stdout:
+                row = Adw.ActionRow()
+                row.set_title("Modulo Bluetooth disattivato")
+                row.set_subtitle("Attiva l'interruttore in alto per scansionare e gestire periferiche.")
+                self.group_bt_devices.add(row)
+                self.bluetooth_rows.append(row)
+                return
+        except Exception:
+            pass
+
         if not devices:
             row = Adw.ActionRow()
-            row.set_title("Nessun dispositivo accoppiato")
-            row.set_subtitle("Usa il comando 'bluetoothctl scan on' per accoppiare nuove periferiche.")
+            row.set_title("Nessun dispositivo rilevato")
+            row.set_subtitle("Premi il pulsante di scansione in alto per scoprire nuovi dispositivi vicini.")
             self.group_bt_devices.add(row)
+            self.bluetooth_rows.append(row)
         else:
-            for mac, name in devices:
+            for mac, name, is_paired in devices:
                 row = Adw.ActionRow()
-                row.set_title(name)
-                row.set_subtitle(f"MAC: {mac}")
-                btn_conn = Gtk.Button(label="Connetti")
-                btn_conn.set_valign(Gtk.Align.CENTER)
-                btn_conn.connect("clicked", lambda b, m=mac: subprocess.run(["bluetoothctl", "connect", m], check=False))
-                row.add_suffix(btn_conn)
+                row.set_title(safe_markup(name))
+                sub_status = "Accoppiato" if is_paired else "Disponibile"
+                row.set_subtitle(f"{sub_status}  •  MAC: {mac}")
+
+                icon = Gtk.Image.new_from_icon_name("bluetooth-active-symbolic")
+                icon.set_pixel_size(20)
+                row.add_prefix(icon)
+
+                box_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                box_actions.set_valign(Gtk.Align.CENTER)
+
+                if is_paired:
+                    btn_forget = Gtk.Button(icon_name="edit-delete-symbolic")
+                    btn_forget.set_valign(Gtk.Align.CENTER)
+                    btn_forget.set_tooltip_text("Rimuovi dispositivo")
+                    btn_forget.add_css_class("flat")
+                    btn_forget.connect("clicked", lambda b, m=mac, n=name: self._remove_bluetooth(m, n))
+                    box_actions.append(btn_forget)
+
+                    btn_conn = Gtk.Button(label="Connetti")
+                    btn_conn.set_valign(Gtk.Align.CENTER)
+                    btn_conn.add_css_class("suggested-action")
+                    btn_conn.connect("clicked", lambda b, m=mac, n=name, btn=btn_conn: self._connect_bluetooth(m, n, btn))
+                    box_actions.append(btn_conn)
+                else:
+                    btn_pair = Gtk.Button(label="Accoppia")
+                    btn_pair.set_valign(Gtk.Align.CENTER)
+                    btn_pair.connect("clicked", lambda b, m=mac, n=name, btn=btn_pair: self._pair_bluetooth(m, n, btn))
+                    box_actions.append(btn_pair)
+
+                row.add_suffix(box_actions)
                 self.group_bt_devices.add(row)
+                self.bluetooth_rows.append(row)
+
+    def _connect_bluetooth(self, mac, name, button=None):
+        if button:
+            button.set_sensitive(False)
+            button.set_label("Connessione...")
+
+        def _worker():
+            res = subprocess.run(["bluetoothctl", "connect", mac], capture_output=True, text=True, check=False)
+            success = (res.returncode == 0)
+            msg = strip_ansi(res.stdout).strip() or strip_ansi(res.stderr).strip()
+
+            def _ui():
+                if button:
+                    button.set_sensitive(True)
+                    button.set_label("Connetti")
+                if success:
+                    self.add_toast(Adw.Toast.new(f"Connesso a '{name}'"))
+                else:
+                    self.add_toast(Adw.Toast.new(f"Errore connessione a '{name}': {msg}"))
+                self._refresh_bluetooth_devices()
+            GLib.idle_add(_ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _pair_bluetooth(self, mac, name, button=None):
+        if button:
+            button.set_sensitive(False)
+            button.set_label("Accoppiamento...")
+
+        def _worker():
+            res = subprocess.run(["bluetoothctl", "pair", mac], capture_output=True, text=True, check=False)
+            success = (res.returncode == 0)
+            msg = strip_ansi(res.stdout).strip() or strip_ansi(res.stderr).strip()
+            if success:
+                subprocess.run(["bluetoothctl", "trust", mac], check=False)
+                subprocess.run(["bluetoothctl", "connect", mac], check=False)
+
+            def _ui():
+                if button:
+                    button.set_sensitive(True)
+                    button.set_label("Accoppia")
+                if success:
+                    self.add_toast(Adw.Toast.new(f"Dispositivo '{name}' accoppiato con successo"))
+                else:
+                    self.add_toast(Adw.Toast.new(f"Accoppiamento fallito: {msg}"))
+                self._refresh_bluetooth_devices()
+            GLib.idle_add(_ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _remove_bluetooth(self, mac, name):
+        def _worker():
+            subprocess.run(["bluetoothctl", "remove", mac], check=False)
+            def _ui():
+                self.add_toast(Adw.Toast.new(f"Dispositivo '{name}' rimosso"))
+                self._refresh_bluetooth_devices()
+            GLib.idle_add(_ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # =========================================================================
     # 4. AUDIO PAGE
@@ -600,8 +1108,9 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         group_out.set_title("Uscita Audio (Altoparlanti e Cuffie)")
         group_out.set_description("Dispositivo principale: Built-in Audio Pro (cht-yogabook)")
 
-        row_vol = Adw.ActionRow()
-        row_vol.set_title("Volume Principale")
+        self.row_vol = Adw.ActionRow()
+        self.row_vol.set_title("Volume Principale")
+        self.row_vol.set_subtitle("Altoparlanti integrati e uscita cuffie 3.5mm")
         box_vol = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self.scale_vol = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
@@ -610,19 +1119,19 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.scale_vol.connect("value-changed", self._on_vol_changed)
 
         self.lbl_vol_val = Gtk.Label(label="--%")
-        self.lbl_vol_val.set_width_chars(5)
+        self.lbl_vol_val.set_width_chars(8)
         self.lbl_vol_val.set_valign(Gtk.Align.CENTER)
 
-        btn_mute_sink = Gtk.Button(icon_name="audio-volume-muted-symbolic")
-        btn_mute_sink.set_valign(Gtk.Align.CENTER)
-        btn_mute_sink.set_tooltip_text("Attiva / Disattiva Muto")
-        btn_mute_sink.connect("clicked", lambda b: self._toggle_sink_mute())
+        self.btn_mute_sink = Gtk.Button(icon_name="audio-volume-high-symbolic")
+        self.btn_mute_sink.set_valign(Gtk.Align.CENTER)
+        self.btn_mute_sink.set_tooltip_text("Attiva / Disattiva Muto Altoparlanti")
+        self.btn_mute_sink.connect("clicked", lambda b: self._toggle_sink_mute())
 
         box_vol.append(self.scale_vol)
         box_vol.append(self.lbl_vol_val)
-        box_vol.append(btn_mute_sink)
-        row_vol.add_suffix(box_vol)
-        group_out.add(row_vol)
+        box_vol.append(self.btn_mute_sink)
+        self.row_vol.add_suffix(box_vol)
+        group_out.add(self.row_vol)
         page.add(group_out)
 
         # --- Group B: Input Source ---
@@ -630,8 +1139,9 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         group_in.set_title("Ingresso Audio (Microfono)")
         group_in.set_description("Microfono array integrato (@DEFAULT_AUDIO_SOURCE@)")
 
-        row_mic = Adw.ActionRow()
-        row_mic.set_title("Livello Microfono")
+        self.row_mic = Adw.ActionRow()
+        self.row_mic.set_title("Livello Microfono")
+        self.row_mic.set_subtitle("Sensibilità microfono array integrato")
         box_mic = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
 
         self.scale_mic = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
@@ -640,19 +1150,19 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.scale_mic.connect("value-changed", self._on_mic_changed)
 
         self.lbl_mic_val = Gtk.Label(label="--%")
-        self.lbl_mic_val.set_width_chars(5)
+        self.lbl_mic_val.set_width_chars(8)
         self.lbl_mic_val.set_valign(Gtk.Align.CENTER)
 
-        btn_mute_source = Gtk.Button(icon_name="audio-input-microphone-symbolic")
-        btn_mute_source.set_valign(Gtk.Align.CENTER)
-        btn_mute_source.set_tooltip_text("Attiva / Disattiva Muto Microfono")
-        btn_mute_source.connect("clicked", lambda b: self._toggle_source_mute())
+        self.btn_mute_source = Gtk.Button(icon_name="audio-input-microphone-symbolic")
+        self.btn_mute_source.set_valign(Gtk.Align.CENTER)
+        self.btn_mute_source.set_tooltip_text("Attiva / Disattiva Muto Microfono")
+        self.btn_mute_source.connect("clicked", lambda b: self._toggle_source_mute())
 
         box_mic.append(self.scale_mic)
         box_mic.append(self.lbl_mic_val)
-        box_mic.append(btn_mute_source)
-        row_mic.add_suffix(box_mic)
-        group_in.add(row_mic)
+        box_mic.append(self.btn_mute_source)
+        self.row_mic.add_suffix(box_mic)
+        group_in.add(self.row_mic)
         page.add(group_in)
 
         # --- Group C: Mixer Shortcut ---
@@ -672,41 +1182,130 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self._load_audio_state()
 
     def _load_audio_state(self):
-        try:
-            res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, check=False)
-            val = int(round(float(res.stdout.strip().split()[1]) * 100))
-            self.scale_vol.set_value(val)
-            self.lbl_vol_val.set_text(f"{val}%")
-        except Exception:
-            pass
+        def _worker():
+            sink_val = None
+            sink_muted = False
+            src_val = None
+            src_muted = False
+            try:
+                res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, check=False)
+                parts = res.stdout.strip().split()
+                if len(parts) >= 2:
+                    sink_val = int(round(float(parts[1]) * 100))
+                    sink_muted = "[MUTED]" in res.stdout
+            except Exception:
+                pass
 
-        try:
-            res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], capture_output=True, text=True, check=False)
-            val = int(round(float(res.stdout.strip().split()[1]) * 100))
-            self.scale_mic.set_value(val)
-            self.lbl_mic_val.set_text(f"{val}%")
-        except Exception:
-            pass
+            try:
+                res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], capture_output=True, text=True, check=False)
+                parts = res.stdout.strip().split()
+                if len(parts) >= 2:
+                    src_val = int(round(float(parts[1]) * 100))
+                    src_muted = "[MUTED]" in res.stdout
+            except Exception:
+                pass
+
+            GLib.idle_add(self._update_audio_ui, sink_val, sink_muted, src_val, src_muted)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_audio_ui(self, sink_val, sink_muted, src_val, src_muted):
+        self.syncing_audio = True
+        self.is_sink_muted = sink_muted
+        if sink_val is not None:
+            self.scale_vol.set_value(sink_val)
+            self.lbl_vol_val.set_text(f"{sink_val}%" if not sink_muted else f"{sink_val}% (Muto)")
+
+        if hasattr(self, "btn_mute_sink") and hasattr(self, "row_vol"):
+            if sink_muted:
+                self.btn_mute_sink.set_icon_name("audio-volume-muted-symbolic")
+                self.btn_mute_sink.add_css_class("destructive-action")
+                self.row_vol.set_subtitle("Audio disattivato (Muto)")
+            else:
+                self.btn_mute_sink.remove_css_class("destructive-action")
+                self.row_vol.set_subtitle("Altoparlanti integrati e uscita cuffie 3.5mm")
+                if sink_val is not None:
+                    if sink_val == 0:
+                        self.btn_mute_sink.set_icon_name("audio-volume-muted-symbolic")
+                    elif sink_val < 33:
+                        self.btn_mute_sink.set_icon_name("audio-volume-low-symbolic")
+                    elif sink_val < 66:
+                        self.btn_mute_sink.set_icon_name("audio-volume-medium-symbolic")
+                    else:
+                        self.btn_mute_sink.set_icon_name("audio-volume-high-symbolic")
+
+        self.is_src_muted = src_muted
+        if src_val is not None:
+            self.scale_mic.set_value(src_val)
+            self.lbl_mic_val.set_text(f"{src_val}%" if not src_muted else f"{src_val}% (Muto)")
+
+        if hasattr(self, "btn_mute_source") and hasattr(self, "row_mic"):
+            if src_muted:
+                self.btn_mute_source.set_icon_name("audio-input-microphone-muted-symbolic")
+                self.btn_mute_source.add_css_class("destructive-action")
+                self.row_mic.set_subtitle("Microfono disattivato (Muto)")
+            else:
+                self.btn_mute_source.remove_css_class("destructive-action")
+                self.row_mic.set_subtitle("Sensibilità microfono array integrato")
+                self.btn_mute_source.set_icon_name("audio-input-microphone-symbolic")
+
+        self.syncing_audio = False
 
     def _on_vol_changed(self, scale):
         val = int(scale.get_value())
-        self.lbl_vol_val.set_text(f"{val}%")
+        self.lbl_vol_val.set_text(f"{val}%" if not self.is_sink_muted else f"{val}% (Muto)")
         if not self.syncing_audio:
-            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{val/100:.2f}"], check=False)
+            self.pending_vol = val
+            if self.vol_debounce_timer is None:
+                self.vol_debounce_timer = GLib.timeout_add(30, self._apply_pending_vol)
+
+    def _apply_pending_vol(self):
+        if self.pending_vol is not None:
+            v = self.pending_vol
+            self.pending_vol = None
+            threading.Thread(
+                target=lambda: subprocess.run(
+                    ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{v/100:.2f}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                ),
+                daemon=True
+            ).start()
+        self.vol_debounce_timer = None
+        return GLib.SOURCE_REMOVE
 
     def _on_mic_changed(self, scale):
         val = int(scale.get_value())
-        self.lbl_mic_val.set_text(f"{val}%")
+        self.lbl_mic_val.set_text(f"{val}%" if not self.is_src_muted else f"{val}% (Muto)")
         if not self.syncing_audio:
-            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{val/100:.2f}"], check=False)
+            self.pending_mic = val
+            if self.mic_debounce_timer is None:
+                self.mic_debounce_timer = GLib.timeout_add(30, self._apply_pending_mic)
+
+    def _apply_pending_mic(self):
+        if self.pending_mic is not None:
+            m = self.pending_mic
+            self.pending_mic = None
+            threading.Thread(
+                target=lambda: subprocess.run(
+                    ["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{m/100:.2f}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                ),
+                daemon=True
+            ).start()
+        self.mic_debounce_timer = None
+        return GLib.SOURCE_REMOVE
 
     def _toggle_sink_mute(self):
-        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], check=False)
-        self._load_audio_state()
+        def _worker():
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], check=False)
+            self._load_audio_state()
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _toggle_source_mute(self):
-        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], check=False)
-        self._load_audio_state()
+        def _worker():
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], check=False)
+            self._load_audio_state()
+        threading.Thread(target=_worker, daemon=True).start()
 
     # =========================================================================
     # 5. HALO KEYBOARD & INPUT PAGE
@@ -784,20 +1383,42 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self._load_halo_backlight()
 
     def _load_halo_backlight(self):
-        try:
-            res = subprocess.run(["brightnessctl", "--device=ybwmi::kbd_backlight", "get"], capture_output=True, text=True, check=False)
-            raw = int(res.stdout.strip())
-            pct = int(round(raw * 100 / 255.0))
-            self.scale_halo.set_value(pct)
-            self.lbl_halo_val.set_text(f"{pct}%")
-        except Exception:
-            pass
+        def _worker():
+            try:
+                res = subprocess.run(["brightnessctl", "--device=ybwmi::kbd_backlight", "get"], capture_output=True, text=True, check=False)
+                raw = int(res.stdout.strip())
+                pct = int(round(raw * 100 / 255.0))
+                def _ui():
+                    self.syncing_halo = True
+                    self.scale_halo.set_value(pct)
+                    self.lbl_halo_val.set_text(f"{pct}%")
+                    self.syncing_halo = False
+                GLib.idle_add(_ui)
+            except Exception:
+                pass
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_halo_backlight_changed(self, scale):
         pct = int(scale.get_value())
         self.lbl_halo_val.set_text(f"{pct}%")
         if not self.syncing_halo:
-            subprocess.run(["brightnessctl", "--device=ybwmi::kbd_backlight", "set", f"{pct}%"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            self.pending_halo = pct
+            if self.halo_debounce_timer is None:
+                self.halo_debounce_timer = GLib.timeout_add(30, self._apply_pending_halo)
+
+    def _apply_pending_halo(self):
+        if self.pending_halo is not None:
+            p = self.pending_halo
+            self.pending_halo = None
+            threading.Thread(
+                target=lambda: subprocess.run(
+                    ["brightnessctl", "--device=ybwmi::kbd_backlight", "set", f"{p}%"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                ),
+                daemon=True
+            ).start()
+        self.halo_debounce_timer = None
+        return GLib.SOURCE_REMOVE
 
     # =========================================================================
     # 6. BATTERY & POWER PAGE
@@ -811,6 +1432,12 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         group_batt = Adw.PreferencesGroup()
         group_batt.set_title("Stato Batteria in Tempo Reale")
         group_batt.set_description("Sensore di carica hardware Texas Instruments bq27542 (I2C)")
+
+        self.btn_refresh_batt = Gtk.Button(icon_name="view-refresh-symbolic")
+        self.btn_refresh_batt.set_valign(Gtk.Align.CENTER)
+        self.btn_refresh_batt.set_tooltip_text("Aggiorna dati batteria")
+        self.btn_refresh_batt.connect("clicked", lambda b: self._refresh_battery_metrics())
+        group_batt.set_header_suffix(self.btn_refresh_batt)
 
         self.row_batt_charge = Adw.ActionRow()
         self.row_batt_charge.set_title("Livello di Carica")
@@ -873,43 +1500,59 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.add(page)
 
     def _refresh_battery_metrics(self):
-        try:
-            uevent_path = "/sys/class/power_supply/bq27542-0/uevent"
-            if not os.path.exists(uevent_path):
-                return
-            with open(uevent_path, "r") as f:
-                content = f.read()
-            props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
+        def _worker():
+            try:
+                uevent_path = "/sys/class/power_supply/bq27542-0/uevent"
+                if not os.path.exists(uevent_path):
+                    return
+                with open(uevent_path, "r") as f:
+                    content = f.read()
+                props = dict(line.split("=", 1) for line in content.splitlines() if "=" in line)
 
-            status = props.get("POWER_SUPPLY_STATUS", "Discharging")
-            charge_now = int(props.get("POWER_SUPPLY_CHARGE_NOW", 0))
-            charge_full = int(props.get("POWER_SUPPLY_CHARGE_FULL", 1))
-            charge_design = int(props.get("POWER_SUPPLY_CHARGE_FULL_DESIGN", 1))
-            voltage_now = int(props.get("POWER_SUPPLY_VOLTAGE_NOW", 0))
-            current_now = int(props.get("POWER_SUPPLY_CURRENT_NOW", 0))
-            temp_raw = int(props.get("POWER_SUPPLY_TEMP", 0))
-            cycles = props.get("POWER_SUPPLY_CYCLE_COUNT", "--")
+                status = props.get("POWER_SUPPLY_STATUS", "Discharging")
+                charge_now = int(props.get("POWER_SUPPLY_CHARGE_NOW", 0))
+                charge_full = int(props.get("POWER_SUPPLY_CHARGE_FULL", 1))
+                charge_design = int(props.get("POWER_SUPPLY_CHARGE_FULL_DESIGN", 1))
+                voltage_now = int(props.get("POWER_SUPPLY_VOLTAGE_NOW", 0))
+                current_now = int(props.get("POWER_SUPPLY_CURRENT_NOW", 0))
+                temp_raw = int(props.get("POWER_SUPPLY_TEMP", 0))
+                cycles = props.get("POWER_SUPPLY_CYCLE_COUNT", "--")
+                time_to_empty = int(props.get("POWER_SUPPLY_TIME_TO_EMPTY_NOW", 0))
 
-            pct = min(100, max(0, int(round(charge_now * 100.0 / charge_full)))) if charge_full > 0 else 0
-            power_w = (voltage_now * current_now) / 1e12
+                pct = min(100, max(0, int(round(charge_now * 100.0 / charge_full)))) if charge_full > 0 else 0
+                power_w = abs(voltage_now * current_now) / 1e12
 
-            status_ita = "In carica" if status == "Charging" else "In uso a batteria"
-            self.lbl_batt_pct.set_text(f"{pct}%")
-            self.row_batt_charge.set_subtitle(f"Stato: {status_ita} ({status})")
+                status_ita = "In carica" if status == "Charging" else ("Carica completa" if status == "Full" else "In uso a batteria")
 
-            self.lbl_batt_power.set_text(f"{power_w:.2f} W")
-            self.row_batt_power.set_subtitle(f"Tensione: {voltage_now/1e6:.2f} V  |  Corrente: {current_now/1e6:.2f} A")
+                time_str = ""
+                if status == "Discharging" and time_to_empty > 0:
+                    hrs = time_to_empty // 3600
+                    mins = (time_to_empty % 3600) // 60
+                    time_str = f"  •  Autonomia stimata: {hrs}h {mins:02d}m"
 
-            self.lbl_batt_temp.set_text(f"{temp_raw/10.0:.1f} °C")
+                health_pct = int(round(charge_full * 100.0 / charge_design)) if charge_design > 0 else 100
 
-            health_pct = int(round(charge_full * 100.0 / charge_design)) if charge_design > 0 else 100
-            self.lbl_health_pct.set_text(f"{health_pct}%")
-            self.row_health.set_subtitle(f"Capacità attuale: {charge_full//1000} mAh  |  Capacità di fabbrica: {charge_design//1000} mAh")
+                def _ui():
+                    self.lbl_batt_pct.set_text(f"{pct}%")
+                    self.row_batt_charge.set_subtitle(f"Stato: {status_ita}{time_str}")
 
-            self.lbl_cycles.set_text(f"{cycles} cicli")
-            self.row_cycles.set_subtitle("Cicli totali registrati dal fuel gauge hardware")
-        except Exception:
-            pass
+                    self.lbl_batt_power.set_text(f"{power_w:.2f} W")
+                    prefix_pwr = "Erogazione" if status == "Charging" else "Consumo"
+                    self.row_batt_power.set_subtitle(f"{prefix_pwr}: {voltage_now/1e6:.2f} V  •  {abs(current_now)/1e6:.2f} A")
+
+                    self.lbl_batt_temp.set_text(f"{temp_raw/10.0:.1f} °C")
+
+                    self.lbl_health_pct.set_text(f"{health_pct}%")
+                    self.row_health.set_subtitle(f"Capacità attuale: {charge_full//1000} mAh  •  Capacità di fabbrica: {charge_design//1000} mAh")
+
+                    self.lbl_cycles.set_text(f"{cycles} cicli")
+                    self.row_cycles.set_subtitle("Cicli totali registrati dal fuel gauge hardware")
+
+                GLib.idle_add(_ui)
+            except Exception as e:
+                print(f"Error reading battery metrics: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # =========================================================================
     # 7. APPEARANCE & SYSTEM INFO PAGE
@@ -946,7 +1589,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         row_cpu = Adw.ActionRow()
         row_cpu.set_title("Processore (CPU)")
-        row_cpu.set_subtitle("Intel® Atom™ x5-Z8550 Quad-Core (1.44 GHz base, 2.40 GHz burst)")
+        row_cpu.set_subtitle("Intel Atom x5-Z8550 Quad-Core (1.44 GHz base, 2.40 GHz burst)")
         group_hw.add(row_cpu)
 
         row_ram = Adw.ActionRow()
@@ -961,7 +1604,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         row_gpu = Adw.ActionRow()
         row_gpu.set_title("Scheda Video (GPU)")
-        row_gpu.set_subtitle("Intel® HD Graphics 400 (Gen8 Cherryview / 12 Execution Units)")
+        row_gpu.set_subtitle("Intel HD Graphics 400 (Gen8 Cherryview / 12 Execution Units)")
         group_hw.add(row_gpu)
 
         page.add(group_hw)
@@ -998,15 +1641,20 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
     def _load_dark_mode_state(self):
         is_dark = False
-        if os.path.exists(GTK4_SETTINGS_PATH):
-            try:
+        try:
+            res = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"], capture_output=True, text=True, check=False)
+            if "prefer-dark" in res.stdout:
+                is_dark = True
+            elif "prefer-light" in res.stdout:
+                is_dark = False
+            elif os.path.exists(GTK4_SETTINGS_PATH):
                 with open(GTK4_SETTINGS_PATH, "r") as f:
                     for line in f:
                         if "gtk-application-prefer-dark-theme" in line:
                             val = line.split("=", 1)[1].strip()
                             is_dark = (val == "1")
-            except Exception:
-                pass
+        except Exception:
+            pass
         self.switch_dark.set_active(is_dark)
 
     def _on_dark_mode_toggled(self, switch, param):
@@ -1015,33 +1663,42 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         sm.set_color_scheme(Adw.ColorScheme.FORCE_DARK if is_dark else Adw.ColorScheme.FORCE_LIGHT)
 
         val_str = "1" if is_dark else "0"
+        scheme = "prefer-dark" if is_dark else "prefer-light"
+        gtk_theme = "Adwaita-dark" if is_dark else "Adwaita"
         icon_theme = "Papirus-Dark" if is_dark else "Papirus-Light"
 
-        for p in [GTK4_SETTINGS_PATH, GTK3_SETTINGS_PATH]:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r") as f:
-                        lines = f.readlines()
-                    out = []
-                    found_dark = False
-                    found_icon = False
-                    for l in lines:
-                        if l.startswith("gtk-application-prefer-dark-theme"):
+        def _worker():
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", scheme], check=False)
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "gtk-theme", gtk_theme], check=False)
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "icon-theme", icon_theme], check=False)
+
+            for p in [GTK4_SETTINGS_PATH, GTK3_SETTINGS_PATH]:
+                if os.path.exists(p):
+                    try:
+                        with open(p, "r") as f:
+                            lines = f.readlines()
+                        out = []
+                        found_dark = False
+                        found_icon = False
+                        for l in lines:
+                            if l.startswith("gtk-application-prefer-dark-theme"):
+                                out.append(f"gtk-application-prefer-dark-theme={val_str}\n")
+                                found_dark = True
+                            elif l.startswith("gtk-icon-theme-name"):
+                                out.append(f"gtk-icon-theme-name={icon_theme}\n")
+                                found_icon = True
+                            else:
+                                out.append(l)
+                        if not found_dark:
                             out.append(f"gtk-application-prefer-dark-theme={val_str}\n")
-                            found_dark = True
-                        elif l.startswith("gtk-icon-theme-name"):
+                        if not found_icon:
                             out.append(f"gtk-icon-theme-name={icon_theme}\n")
-                            found_icon = True
-                        else:
-                            out.append(l)
-                    if not found_dark:
-                        out.append(f"gtk-application-prefer-dark-theme={val_str}\n")
-                    if not found_icon:
-                        out.append(f"gtk-icon-theme-name={icon_theme}\n")
-                    with open(p, "w") as f:
-                        f.writelines(out)
-                except Exception as e:
-                    print(f"Error updating {p}: {e}")
+                        with open(p, "w") as f:
+                            f.writelines(out)
+                    except Exception as e:
+                        print(f"Error updating {p}: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
 
 def main():

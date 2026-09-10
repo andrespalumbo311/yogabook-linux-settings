@@ -19,6 +19,9 @@ import os
 import atexit
 import signal
 import subprocess
+# Guarantee canonical Wayland & Xwayland displays for child applications
+os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
+os.environ.setdefault("DISPLAY", ":0")
 
 # Ensure libgtk4-layer-shell is preloaded before libwayland-client
 if "libgtk4-layer-shell.so" not in os.environ.get("LD_PRELOAD", ""):
@@ -32,6 +35,9 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Gdk', '4.0')
 gi.require_version('Gtk4LayerShell', '1.0')
 from gi.repository import Gtk, Gdk, Gtk4LayerShell, Gio, GLib, Pango
+
+# Strip LD_PRELOAD so child applications (GTK3, Electron, CEF, Qt) do not crash
+os.environ.pop("LD_PRELOAD", None)
 
 PIDFILE = "/tmp/yogabook-launcher.pid"
 
@@ -290,11 +296,20 @@ class YogaBookLauncher(Gtk.Window):
 
     def launch_app(self, item):
         try:
-            item.app_info.launch([], None)
+            ctx = self.get_display().get_app_launch_context()
+            ctx.setenv("DISPLAY", os.environ.get("DISPLAY", ":0"))
+            ctx.setenv("WAYLAND_DISPLAY", os.environ.get("WAYLAND_DISPLAY", "wayland-0"))
+            ctx.unsetenv("LD_PRELOAD")
+            item.app_info.launch([], ctx)
         except Exception:
-            cmd = item.app_info.get_commandline()
-            if cmd:
-                subprocess.Popen(cmd, shell=True)
+            try:
+                item.app_info.launch([], None)
+            except Exception:
+                cmd = item.app_info.get_commandline()
+                if cmd:
+                    clean_env = dict(os.environ)
+                    clean_env.pop("LD_PRELOAD", None)
+                    subprocess.Popen(cmd, shell=True, env=clean_env)
         self.hide_launcher()
 
     def on_window_clicked(self, gesture, n_press, x, y):

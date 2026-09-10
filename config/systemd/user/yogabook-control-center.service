@@ -6,6 +6,7 @@ After=mango-session.target
 [Service]
 Type=simple
 Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DISPLAY=:0
 Environment=LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so
 ExecStart=/home/andres/.local/bin/yogabook-control-center --daemon
 Restart=on-failure
