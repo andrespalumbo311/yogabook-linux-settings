@@ -51,12 +51,15 @@ yogabook-config/
 │   ├── wofi/
 │   │   ├── config                 # Wofi touch-friendly launcher settings (MD3)
 │   │   └── style.css              # Material Design 3 (Material You Light) stylesheet
+│   ├── easyeffects/
+│   │   └── output/                # PipeWire DSP presets (YogaBook-Speakers, LoudnessEqualizer)
 │   └── systemd/
 │       └── user/
 │           ├── rot8.service       # User systemd service for yogabook-autorotate
 │           ├── wvkbd.service      # User systemd service for wvkbd (hidden background process)
 │           ├── waybar.service     # User systemd service for Waybar
-│           └── swaync.service     # User systemd service for SwayNC
+│           ├── swaync.service     # User systemd service for SwayNC
+│           └── easyeffects.service# User systemd service for EasyEffects headless DSP daemon
 │
 └── system/                        # System configurations and low-level fixes (/etc)
     ├── pamac_fix/                 # C source & Makefile for libalpm Landlock sandbox bypass
@@ -120,6 +123,7 @@ When working on this repository, you **MUST** follow these operating rules:
    - **SwayNC**: `swaync-client -R -rs` or `systemctl --user restart swaync.service`
    - **Rotation Daemon**: `systemctl --user restart rot8.service`
    - **Virtual Keyboard**: `systemctl --user restart wvkbd.service`
+   - **EasyEffects**: `systemctl --user restart easyeffects.service` or `easyeffects -l <preset>`
    - **Systemd User Units**: `systemctl --user daemon-reload`
 
 3. **System Files (`/etc`) Safety**:

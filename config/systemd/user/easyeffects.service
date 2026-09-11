@@ -1,0 +1,16 @@
+[Unit]
+Description=EasyEffects - Audio Effects for PipeWire
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=QT_QPA_PLATFORM=wayland
+ExecStart=/usr/bin/easyeffects --service-mode
+LimitRTPRIO=0
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target

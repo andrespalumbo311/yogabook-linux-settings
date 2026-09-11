@@ -413,5 +413,113 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   In convertible systems where hardware switches dynamically power-cycle or destroy peripheral buses, never rely on one-shot state flags for peripheral suppression. Always implement active state reconciliation that continuously verifies device existence, grabs, and background service states against the active physical posture.
 
+---
 
+## 20. Qt Platform Disconnect & Dual Preset Path Migration Collisions in EasyEffects Headless Daemons
 
+- **Date**: 2026-09-10
+- **Subsystem**: Audio Subsystem / PipeWire DSP / User Systemd Daemons (`easyeffects`, `PipeWire`, `Qt6`, `lsp-plugins-lv2`)
+- **Symptoms**:
+  - Launching `easyeffects --service-mode` via systemd user services or CLI fails immediately with:
+    ```text
+    qt.qpa.xcb: could not connect to display
+    qt.qpa.plugin: Could not load the Qt platform plugin "xcb"
+    ```
+  - Presets placed concurrently in `~/.config/easyeffects/output/` and `~/.local/share/easyeffects/output/` cause startup errors:
+    ```text
+    presets_directory_manager.cpp: Old ~/.config/easyeffects/output directory detected. Migrating its files...
+    util.cpp: Copy Error: Failed to copy ... Reason: File exists
+    ```
+  - High CPU usage or audio stuttering if complex convolvers or multi-band dynamics processors are applied on ultra-low-power Intel Atom SoCs.
+- **Root Cause**:
+  1. *Qt6 Wayland Platform Selection*: In standalone Wayland sessions (MangoWC/wlroots) where X11/Xcb is secondary or unexported, Qt6 binaries default to the XCB platform unless `QT_QPA_PLATFORM=wayland` and `WAYLAND_DISPLAY=wayland-0` are explicitly exported in the systemd user service environment.
+  2. *Legacy Path Migration Collision*: Starting in EasyEffects v8 (Qt6/Kirigami rewrite), the canonical user presets path was migrated from `~/.config/easyeffects/output` to `~/.local/share/easyeffects/output` (XDG_DATA_HOME). If both directories exist and point (via symlinks) to the same physical repository folder, the built-in migration handler attempts to copy files over themselves, aborting the migration with an unhandled file collision.
+  3. *SoC DSP Saturation*: Low-power Atom x5 cores cannot sustain high-tap FIR filters or multi-stage multiband splitting alongside video decoding without periodic audio buffer underruns.
+- **Resolution**:
+  1. In `config/systemd/user/easyeffects.service`, declare explicit environment keys:
+     ```ini
+     Environment=WAYLAND_DISPLAY=wayland-0
+     Environment=QT_QPA_PLATFORM=wayland
+     ExecStart=/usr/bin/easyeffects --service-mode
+     ```
+  2. Canonicalize repository dotfiles to link solely to `~/.local/share/easyeffects/output/` and eliminate legacy symlinks in `~/.config/easyeffects/output/`.
+  3. Deploy a streamlined 3-stage DSP chain (`YogaBook-Speakers.json`) using lightweight, SIMD-optimized `lsp-plugins-lv2`:
+     - High-Pass Filter (HPF 110 Hz, 12 dB/oct) to prevent tiny transducer bottoming-out and chassis rattle.
+     - 10-Band Parametric Equalizer targeting resonance dips (2.2 kHz) and vocal presence (4.8 kHz).
+     - Upward Compressor and True-Peak Limiter (-0.5 dB ceiling) for consistent volume without clipping.
+- **Prevention Pattern**:
+  When managing Qt6-based background services in Wayland environments, always declare `QT_QPA_PLATFORM=wayland` and `WAYLAND_DISPLAY` explicitly in systemd service definitions. In software migrations where application vendors transition data paths from `XDG_CONFIG_HOME` to `XDG_DATA_HOME`, avoid multi-linking both paths to avoid internal migration collisions.
+
+---
+
+## 21. RealtimeKit Canary Watchdog SIGKILL Loop on Atom SoCs & ALSA DMA Buffer Tuning
+
+- **Date**: 2026-09-10
+- **Subsystem**: Audio Pipeline / PipeWire / Process Scheduling / ALSA Hardware Driver (`rtkit`, `easyeffects`, `wireplumber`, `pipewire`, `cht-yogabook`)
+- **Symptoms**:
+  - Initial symptom: Sporadic audio micro-stutters accompanied by a mechanical "pop" or "scratch" sound resembling a 3.5mm headphone jack being physically plugged in. `pw-top` showed rapid accumulation of `ERR` (XRUNs) on the ALSA sink and Chromium streams.
+  - Secondary regression upon installing `rtkit`: YouTube videos play for exactly 1 second and then stall/pause continuously. Journal logs reveal `easyeffects.service` crashing every 2-3 seconds with `status=9/KILL` (`Main process exited, code=killed, status=9/KILL`).
+- **Root Cause**:
+  1. *Hardware DMA Jitter & DAC Suspend*: The initial stutters and pop sounds were caused by `api.alsa.headroom = 0` combined with dynamic ALSA sink suspension (`session.suspend-timeout-seconds`) and period phase mismatch against the Intel SST Cherryview DSP hardware.
+  2. *RTKit Canary Watchdog Timeout on Low-Power Cores*: When `rtkit` is deployed, EasyEffects requests `SCHED_RR` (real-time priority 1). RealtimeKit runs an active canary watchdog (`canary-watchdog-msec`, default 200ms). On Intel Atom x5-Z8550 (ultra-low-power in-order cores), C++/Qt6 userspace DSP filter processing exceeds the watchdog's strict real-time CPU budget. The kernel/RTKit forcefully terminates EasyEffects with `SIGKILL` (signal 9).
+  3. *D-Bus Socket-Activation Trap*: Disabling `rtkit-daemon.service` via systemctl is bypassed by `/usr/share/dbus-1/system-services/org.freedesktop.RealtimeKit1.service`, which automatically respawns RTKit whenever an audio process queries D-Bus, re-initiating the kill loop.
+  4. *Browser Audio Sink Loss*: When EasyEffects dies, its virtual sink disappears, causing Chromium's HTML5 video player to freeze/pause after playing the unbuffered 1-second video slice.
+- **Resolution**:
+  1. Completely purge the `rtkit` package (`sudo pacman -Rns rtkit`) to eliminate the D-Bus activation trigger and killer watchdog entirely.
+  2. In `config/systemd/user/easyeffects.service`, set `LimitRTPRIO=0` to permanently restrict userspace DSP to stable CFS scheduling.
+  3. Fix the underlying hardware DMA underruns cleanly in `config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf`:
+     - `api.alsa.period-size = 1024` (matches PipeWire quantum).
+     - `api.alsa.headroom = 1024` (provides DMA hardware buffer safety margin).
+     - `session.suspend-timeout-seconds = 0` (keeps the DAC awake, eliminating the wake-up pop).
+  4. In `config/pipewire/pipewire.conf.d/10-rates-quantum.conf`, fix `default.clock.quantum = 1024` (min 512, max 2048) at 48000 Hz.
+- **Prevention Pattern**:
+  On low-power mobile SoCs (such as Intel Atom/Cherry Trail), never deploy `rtkit` with complex userspace DSP daemons. The in-order cores will inevitably trigger RT watchdog timeouts and catastrophic `SIGKILL` termination loops. Always isolate userspace DSP to CFS (`LimitRTPRIO=0`).
+
+---
+
+## 22. Permanent ALSA Handle Lock (`suspend-timeout-seconds = 0`) & Broken Pipe Deadlock on SoC Standby
+
+- **Date**: 2026-09-11
+- **Subsystem**: Audio Pipeline / WirePlumber / Intel SST DMA Driver / Connected Standby (`pipewire`, `wireplumber`, `intel_sst_acpi`, `s2idle`)
+- **Symptoms**:
+  - After resuming the device from suspend/sleep (`s2idle`), videos play in Chromium and media players with visible progress, but the physical speakers produce absolute silence.
+  - PipeWire journal logs show recurring unrecoverable ALSA errors:
+    ```text
+    spa.alsa: hw:1,0p: (1 suppressed) snd_pcm_avail after recover: Broken pipe
+    ```
+  - Userspace monitoring (`pw-record`, EasyEffects level meters) shows active signal processing and high amplitudes, yet no acoustic output reaches the speakers.
+- **Root Cause**:
+  1. *Hardware Power-State Loss during Connected Standby*: On Intel Cherry Trail platforms (`intel_sst_acpi`), the DSP hardware and audio clocking are powered down during system suspend.
+  2. *Permanent File Descriptor Lock*: Forcing `session.suspend-timeout-seconds = 0` in WirePlumber to keep the audio DAC awake permanently prevents PipeWire from ever closing or suspending the ALSA PCM device.
+  3. *Unrecoverable Broken Pipe State*: When the kernel wakes from `s2idle`, the active audio stream handle `hw:1,0` is desynchronized because the hardware DMA engine was power-cycled beneath it. PipeWire's internal `snd_pcm_recover()` call fails with `-EPIPE` (Broken pipe), leaving the stream in a wedged zombie state where buffer pointers advance in memory without being transferred across the I2S bus.
+  4. *Period Size Mismatch*: Forcing `api.alsa.period-size = 1024` conflicts with the Intel SST platform driver's fixed period size of 1008 frames (`buffer_size: 34272`), inducing a 16-sample periodic phase drift.
+- **Resolution**:
+  1. In `config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf`, set `api.alsa.headroom = 1024` to maintain a 1024-sample DMA safety cushion, completely eliminating playback XRUN pops and jitter on the Atom CPU.
+  2. Maintain `session.suspend-timeout-seconds = 5` (dynamic node suspension), enabling WirePlumber to cleanly release and close the ALSA file descriptor when idle and across system power-state transitions (`s2idle`), preventing the post-resume `Broken pipe` deadlock.
+  3. Allow `period-size` to negotiate dynamically against the native 1008-frame hardware period rather than forcing 1024.
+  4. In `config/pipewire/pipewire.conf.d/10-rates-quantum.conf`, set `default.clock.min-quantum = 64` to provide full dynamic headroom for stream adapters.
+- **Prevention Pattern**:
+  Do not conflate playback DMA buffer underruns with DAC idle sleep. Always solve playback XRUN clicks by tuning hardware headroom (`api.alsa.headroom >= 1024`), while strictly keeping `session.suspend-timeout-seconds > 0` on SoC platforms that implement Connected Standby (`s2idle`) to prevent unrecoverable kernel/DSP descriptor deadlocks upon system resume.
+
+---
+
+## 23. EasyEffects v8 (Qt6) Runtime KConfig DB Desynchronization Causing Acoustic Distortion
+
+- **Date**: 2026-09-11
+- **Subsystem**: DSP Processing / EasyEffects v8 / Audio Tuning (`easyeffects`, `equalizerrc`, `compressorrc`)
+- **Symptoms**:
+  - Harsh harmonic clipping, diaphragm bottoming-out, and resonant distortion on dialogue/voices (especially male/baritone fundamentals) during video and media playback at moderate to high master volume (>50%).
+  - The tuned JSON profile (`YogaBook-Speakers.json`) on disk contained gentle high-pass and negative notch cuts, but the acoustic output behaved as if excessive low-end boost was still active.
+- **Root Cause**:
+  1. *EasyEffects v8 Architecture Shift*: Unlike older GTK3/GSettings-based versions of EasyEffects, EasyEffects v8 (Qt6/Kirigami) caches and prioritizes its live DSP filter parameters inside an internal KConfig INI database located at `~/.config/easyeffects/db/` (`equalizerrc`, `compressorrc`, `limiterrc`).
+  2. *Runtime DB Desynchronization*: Modifying preset JSON files on disk does not automatically trigger an update of the internal KConfig database. Restarting `easyeffects.service` (`--service-mode`) merely reloads the existing stale values stored in `~/.config/easyeffects/db/`.
+  3. *Unsynchronized Boost Overlap*: The stale KConfig state held an outdated aggressive profile with `band0Frequency=110`, `band1Gain=+3.5 dB` at 180 Hz, and an Upward compressor (`mode=1`) with `boostAmount=+5.0 dB`. This resulted in a massive +8.5 dB cumulative boost around 150–200 Hz, overdriving the miniature tablet transducers into mechanical bottoming-out.
+- **Resolution**:
+  1. Force EasyEffects to reload and re-parse the JSON preset from disk by toggling presets via the CLI or updating the KConfig database:
+     ```bash
+     WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland easyeffects -l <preset-name>
+     ```
+  2. Verify that stopping `easyeffects.service` flushes the corrected values into `~/.config/easyeffects/db/equalizerrc` (`band0Frequency=150`, `band1Gain=-1.5`) and `~/.config/easyeffects/db/compressorrc` (`mode=0` Downward, `boostAmount=0`).
+  3. Restart the service (`systemctl --user restart easyeffects.service`) to ensure all PipeWire DSP filter nodes reflect the tuned parameters.
+- **Prevention Pattern**:
+  Never assume that editing an EasyEffects JSON preset file will alter DSP behavior across service restarts. Always verify and synchronize the active runtime KConfig database in `~/.config/easyeffects/db/` using `easyeffects -l <preset>` or direct DB inspection.

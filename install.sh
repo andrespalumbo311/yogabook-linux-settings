@@ -85,8 +85,14 @@ link_file "$REPO_DIR/config/systemd/user/swaync.service" "$HOME_DIR/.config/syst
 link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.config/systemd/user/yogabook-launcher.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-control-center.service" "$HOME_DIR/.config/systemd/user/yogabook-control-center.service"
 link_file "$REPO_DIR/config/systemd/user/polkit-gnome.service" "$HOME_DIR/.config/systemd/user/polkit-gnome.service"
+link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.config/systemd/user/easyeffects.service"
 
-# 5. Setup Report
+# 5. EasyEffects & PipeWire Audio Tuning
+link_file "$REPO_DIR/config/easyeffects/output" "$HOME_DIR/.local/share/easyeffects/output"
+link_file "$REPO_DIR/config/pipewire/pipewire.conf.d/10-rates-quantum.conf" "$HOME_DIR/.config/pipewire/pipewire.conf.d/10-rates-quantum.conf"
+link_file "$REPO_DIR/config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf" "$HOME_DIR/.config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf"
+
+# 6. Setup Report
 link_file "$REPO_DIR/YOGABOOK_SETUP_REPORT.md" "$HOME_DIR/YOGABOOK_SETUP_REPORT.md"
 
 echo "Reloading systemd user daemon..."
