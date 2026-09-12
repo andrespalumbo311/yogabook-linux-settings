@@ -297,7 +297,10 @@ def check_wifi_active():
 def check_bt_active():
     try:
         out = subprocess.check_output(["rfkill", "list", "bluetooth"], text=True, stderr=subprocess.DEVNULL)
-        return "Soft blocked: no" in out
+        if "Soft blocked: yes" in out:
+            return False
+        out_bt = subprocess.check_output(["bluetoothctl", "show"], text=True, stderr=subprocess.DEVNULL)
+        return "Powered: yes" in out_bt
     except Exception:
         return False
 

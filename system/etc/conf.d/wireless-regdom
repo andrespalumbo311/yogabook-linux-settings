@@ -1,0 +1,2 @@
+# Wireless regulatory domain configuration for Italy / European Union
+WIRELESS_REGDOM="IT"

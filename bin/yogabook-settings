@@ -897,9 +897,10 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         # Initial radio state
         try:
-            res = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
-            is_blocked = "Soft blocked: yes" in res.stdout
-            self.switch_bt.set_active(not is_blocked)
+            res_rf = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
+            res_bt = subprocess.run(["bluetoothctl", "show"], capture_output=True, text=True, check=False)
+            is_active = ("Soft blocked: no" in res_rf.stdout) and ("Powered: yes" in res_bt.stdout)
+            self.switch_bt.set_active(is_active)
         except Exception:
             self.switch_bt.set_active(False)
 
@@ -982,8 +983,9 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         # Check if bluetooth is powered off
         try:
-            res = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
-            if "Soft blocked: yes" in res.stdout:
+            res_rf = subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True, text=True, check=False)
+            res_bt = subprocess.run(["bluetoothctl", "show"], capture_output=True, text=True, check=False)
+            if "Soft blocked: yes" in res_rf.stdout or "Powered: no" in res_bt.stdout or "No default controller" in res_bt.stdout:
                 row = Adw.ActionRow()
                 row.set_title("Modulo Bluetooth disattivato")
                 row.set_subtitle("Attiva l'interruttore in alto per scansionare e gestire periferiche.")

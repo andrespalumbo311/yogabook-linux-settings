@@ -9,6 +9,14 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOME_DIR="${HOME:-/home/andres}"
 
+# If running without an interactive terminal or with USE_ASKPASS, use graphical askpass if available
+if [ -n "${SUDO_ASKPASS:-}" ] || [ "${USE_ASKPASS:-0}" = "1" ] || [ ! -t 0 ]; then
+    if [ -x "$HOME_DIR/.local/bin/zenity-askpass" ]; then
+        export SUDO_ASKPASS="$HOME_DIR/.local/bin/zenity-askpass"
+        sudo() { command sudo -A "$@"; }
+    fi
+fi
+
 link_file() {
     local src="$1"
     local dest="$2"
@@ -110,9 +118,14 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/greetd/config.toml" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/greetd/config.toml" /etc/greetd/config.toml
     fi
-    if [ -f "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" ]; then
-        sudo install -Dm644 "$REPO_DIR/system/etc/systemd/system/bluetooth-default-off.service" /etc/systemd/system/bluetooth-default-off.service
-        sudo systemctl enable bluetooth-default-off.service || true
+    if [ -f "$REPO_DIR/system/etc/bluetooth/main.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/bluetooth/main.conf" /etc/bluetooth/main.conf
+        sudo systemctl restart bluetooth.service || true
+    fi
+    if [ -f /etc/systemd/system/bluetooth-default-off.service ]; then
+        echo "Disabling legacy bluetooth-default-off.service in favor of BlueZ AutoEnable=false..."
+        sudo systemctl disable --now bluetooth-default-off.service || true
+        sudo rm -f /etc/systemd/system/bluetooth-default-off.service
     fi
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/60-mmc-readahead.rules" /etc/udev/rules.d/60-mmc-readahead.rules
@@ -120,10 +133,30 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" /etc/udev/rules.d/62-yogabook-keyboard.rules
     fi
+    if [ -f "$REPO_DIR/system/etc/modprobe.d/brcmfmac.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/modprobe.d/brcmfmac.conf" /etc/modprobe.d/brcmfmac.conf
+    fi
+    if [ -f "$REPO_DIR/system/etc/iwd/main.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/iwd/main.conf" /etc/iwd/main.conf
+    fi
+    if [ -f "$REPO_DIR/system/etc/conf.d/wireless-regdom" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/conf.d/wireless-regdom" /etc/conf.d/wireless-regdom
+    fi
     sudo udevadm control --reload-rules && sudo udevadm trigger /dev/input/event* || true
     if [ -f "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" /etc/polkit-1/rules.d/49-yogabook-keyboard.rules
     fi
+
+    # Suppress kernel console spam over tuigreet in systemd-boot entries
+    for boot_entry in /boot/loader/entries/yogabook.conf /boot/loader/entries/*linux.conf; do
+        if [ -f "$boot_entry" ]; then
+            if ! grep -q "quiet" "$boot_entry"; then
+                echo "Adding quiet loglevel=3 to $boot_entry..."
+                sudo sed -i 's/\(^options .*\)/\1 quiet loglevel=3/' "$boot_entry"
+            fi
+        fi
+    done
+
     sudo sysctl --system >/dev/null || true
     sudo systemctl daemon-reload || true
     echo "[OK] System configuration files updated."

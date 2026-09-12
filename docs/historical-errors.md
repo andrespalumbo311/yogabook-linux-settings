@@ -523,3 +523,78 @@ This document records architectural, packaging, and runtime issues encountered o
   3. Restart the service (`systemctl --user restart easyeffects.service`) to ensure all PipeWire DSP filter nodes reflect the tuned parameters.
 - **Prevention Pattern**:
   Never assume that editing an EasyEffects JSON preset file will alter DSP behavior across service restarts. Always verify and synchronize the active runtime KConfig database in `~/.config/easyeffects/db/` using `easyeffects -l <preset>` or direct DB inspection.
+
+---
+
+## 24. Serdev Driver Initialization Race with Early RFKill & Kernel Printk Console Bleeding over TUI Display Manager
+
+- **Date**: 2026-09-12
+- **Subsystem**: Display Manager / Bluetooth Serdev Driver / Kernel Console Log Level (`greetd`, `tuigreet`, `hci_bcm`, `bluez`, `printk`, `systemd-boot`)
+- **Symptoms**:
+  - Visual glitch inside the `tuigreet` password field on VT1 at boot: terminal error lines related to Bluetooth timeouts (`command 0xfc45 tx timeout`, `BCM: failed to write clock (-110)`, `BCM: Reset failed (-110)`) are printed directly over the login form.
+  - The login prompt functions normally and user authentication succeeds (the text is purely an artifact stamped on the terminal framebuffer, not present in the input buffer).
+  - The Bluetooth adapter remains wedged in an uninitialized/failed state until manually power-cycled.
+- **Root Cause**:
+  1. *Premature RFKill Hardware Disconnection*: An aggressive systemd oneshot unit (`bluetooth-default-off.service`) invoked `rfkill block bluetooth` concurrently while the kernel Broadcom UART driver (`hci_bcm`) was uploading the firmware patch (`BCM4356A2.hcd`) and negotiating baudrate/clocking. Cutting power mid-transaction triggered a hardware UART timeout (`-110 = ETIMEDOUT`).
+  2. *Unsilenced Kernel Console Printk*: The default kernel loglevel was unconstrained (`kernel.printk = 7 4 1 7`) and the bootloader options lacked `quiet loglevel=3`, routing all kernel warnings and driver timeouts directly to the active virtual terminal.
+  3. *TUI Framebuffer Overwrite*: `greetd` launches `tuigreet` on VT1 (`vt = 1`). Because the driver timeout occurred 2 seconds after `tuigreet` rendered its initial screen, the kernel printed messages across the TTY buffer, corrupting the ncurses display.
+- **Resolution**:
+  1. Retire the premature `bluetooth-default-off.service` and configure BlueZ's native daemon policy `AutoEnable=false` in `system/etc/bluetooth/main.conf`. This allows `hci_bcm` to complete its ACPI/serdev probe and firmware upload cleanly while keeping the radio powered off at boot.
+  2. Update `yogabook-control-center` (`check_bt_active`) and `yogabook-settings` to evaluate both `rfkill` soft-block and BlueZ `Powered` status so the UI accurately displays Bluetooth as inactive when `AutoEnable=false` is in effect.
+  3. Add `kernel.printk = 3 4 1 3` to `system/etc/sysctl.d/99-zram-performance.conf` to block kernel warning/info messages from reaching the console TTY.
+  4. In `install.sh`, automate appending `quiet loglevel=3` to systemd-boot configuration entries (`/boot/loader/entries/yogabook.conf`) and synchronizing `/etc/bluetooth/main.conf`.
+- **Prevention Pattern**:
+  Never enforce default-off power management by firing abrupt hardware-level `rfkill` cuts early during boot on UART/serdev SoC platforms. Always rely on Bluetooth daemon policy (`AutoEnable=false`) to ensure firmware patches and clock configuration finish gracefully. Additionally, when using console/TUI greeters (`tuigreet`), always suppress kernel console verbosity (`quiet loglevel=3` and `kernel.printk <= 3`) to prevent asynchronous driver diagnostics from contaminating the login interface.
+
+---
+
+## 25. Broadcom FullMAC (brcmfmac) Firmware Rekey Drops & Uncoordinated Mesh Roaming Handshake Desynchronization
+
+- **Date**: 2026-09-12
+- **Subsystem**: Wireless Networking / Kernel Drivers / WPA2 Handshake (`brcmfmac`, `iwd`, `systemd-networkd`, `wireless-regdb`)
+- **Symptoms**:
+  - Systematic Wi-Fi disconnection every 10 minutes (precisely 600 seconds) on the clock:
+    ```text
+    iwd[460]: Received Deauthentication event, reason: 2, from_ap: true
+    systemd-networkd[334]: wlan0: Lost carrier
+    systemd-networkd[334]: wlan0: DHCP lease lost
+    ```
+  - Spurious connection drops and multi-second freezes during mesh roaming across multiple BSSIDs sharing the same SSID:
+    ```text
+    iwd[460]: event: state, old: connected, new: fw-roaming
+    iwd[460]: 4-Way handshake failed for ifindex: 2, reason: 1
+    kernel: ieee80211 phy0: brcmf_run_escan: error (-52)
+    iwd[460]: Received error during CMD_TRIGGER_SCAN: Invalid exchange (52)
+    ```
+  - Kernel boot logs report missing regulatory database:
+    ```text
+    kernel: faux_driver regulatory: Direct firmware load for regulatory.db failed with error -2
+    kernel: cfg80211: failed to load regulatory.db
+    ```
+- **Root Cause**:
+  1. *WPA2 GTK Rekey Dropped over NL80211 Control Port*: Access points on mesh topologies (e.g. AVM Fritz!Box / Fritz!Repeater) enforce a periodic 600-second Group Temporal Key (GTK) renewal. By default, `iwd` listens for EAPoL frames via nl80211 control port (`ControlPortOverNL80211=true`). The Broadcom FullMAC PCIe driver/firmware (`brcmfmac`) does not reliably deliver incoming GTK renewal frames over netlink, exacerbated by 802.11 power saving sleeping through DTIM multicast beacons. Because `iwd` never receives Message 1 to return Message 2, the AP times out and issues a forced IEEE 802.11 Deauthentication with code 2 (`WLAN_REASON_PREV_AUTH_NOT_VALID`).
+  2. *Autonomous Firmware Roaming Desynchronization*: In environments with multiple mesh APs, the Broadcom firmware's internal roaming engine (`roamoff=0` default) autonomously attempts BSSID migrations in the background. The on-chip roaming engine fails to coordinate the 4-way WPA handshake with the userland supplicant, triggering handshake timeouts (`reason: 1`) and scan engine stalls (`EBADE -52`).
+  3. *Uninstalled Regulatory Database*: The absence of `wireless-regdb` on the minimal rootfs forces `cfg80211` into the global generic "world domain" (`00`), restricting transmission power (Tx power throttled to ~12–14 dBm instead of 20 dBm / 100 mW allowed in Italy/EU) and degrading SNR and throughput.
+- **Resolution**:
+  1. Disable internal firmware roaming in `system/etc/modprobe.d/brcmfmac.conf`:
+     ```ini
+     options brcmfmac roamoff=1
+     ```
+     This delegates roaming decisions cleanly to userland (`iwd`) without firmware-level races.
+  2. Enforce raw PAE socket frame processing and disable Wi-Fi power save in `system/etc/iwd/main.conf`:
+     ```ini
+     [General]
+     ControlPortOverNL80211=false
+     RoamThreshold=-70
+     RoamRetryInterval=60
+
+     [DriverQuirks]
+     DefaultInterface=brcmfmac
+     ForcePae=brcmfmac
+     PowerSaveDisable=brcmfmac
+     ```
+  3. Install `wireless-regdb` and `iw` (`sudo pacman -S --needed wireless-regdb iw`) and define `WIRELESS_REGDOM="IT"` in `system/etc/conf.d/wireless-regdom`.
+  4. Incorporate `modprobe.d/brcmfmac.conf`, `iwd/main.conf`, and `conf.d/wireless-regdom` into `install.sh --system` for deterministic synchronization.
+- **Prevention Pattern**:
+  On FullMAC wireless chipsets (Broadcom, Realtek) managed by modern userland daemons like `iwd`, never rely on nl80211 control port forwarding for EAPoL frames nor leave on-chip firmware roaming enabled in multi-AP/mesh environments. Always configure raw PAE socket capture (`ForcePae`), disable firmware-level roaming (`roamoff=1`), and ensure `wireless-regdb` is explicitly present in the base package set.
+
