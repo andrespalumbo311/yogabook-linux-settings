@@ -598,3 +598,26 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On FullMAC wireless chipsets (Broadcom, Realtek) managed by modern userland daemons like `iwd`, never rely on nl80211 control port forwarding for EAPoL frames nor leave on-chip firmware roaming enabled in multi-AP/mesh environments. Always configure raw PAE socket capture (`ForcePae`), disable firmware-level roaming (`roamoff=1`), and ensure `wireless-regdb` is explicitly present in the base package set.
 
+---
+
+## 26. MediaTek Pump Express+ Kernel Workqueue Freezing in Connected Standby Causing Slow Charging (5V Trickle)
+
+- **Date**: 2026-09-15
+- **Subsystem**: Power Supply / Battery Charging / Kernel Workqueues / Sleep Inhibitors (`bq25890_charger`, `cht_wcove_pwrsrc`, `systemd-logind`, `systemd-inhibit`)
+- **Symptoms**:
+  - Connecting the charger while the device is in standby (`s2idle`) or suspended with the lid closed results in extremely slow charging (~2.1W / +6% per hour), requiring over 15 hours for a full charge.
+  - No visual or haptic feedback occurs upon connecting the charger during standby (LED driver `cht_wcove_leds` and display are asleep).
+  - If the charger is plugged in right as the device is entering suspend, I2C transactions collide with bus suspend, producing kernel warnings (`__i2c_smbus_xfer`, `Error reading/writing extchgrirq reg`, `driver failed to report voltage_now property: -108`).
+  - As soon as the device is physically woken up (lid opened), charging speed abruptly jumps to 24W (~11W net into battery, +40% per hour), logging `Hi-voltage charging requested, input voltage is 11300000 mV`.
+- **Root Cause**:
+  1. *Software-Driven High-Voltage Negotiation*: The Lenovo Yoga Book fast charger utilizes MediaTek Pump Express+ (PE+) high-voltage stepping (5V -> 7V -> 9V -> 12V / 11.3V). The TI BQ25892 charger IC cannot negotiate Pump Express autonomously in hardware; negotiation is driven by a Linux kernel delayed workqueue (`bq25890_pump_express_work`) with an initial 5-second start delay (`PUMP_EXPRESS_START_DELAY`).
+  2. *Immediate Re-Suspend & Workqueue Freezing*: While the PMIC generates a wake interrupt on VBUS insertion that briefly resumes the SoC, `systemd-logind` evaluates `HandleLidSwitch=suspend` and immediately forces the system back to `s2idle` before the 5-second timer elapses. Furthermore, with `LidSwitchIgnoreInhibited=yes` by default, standard sleep inhibitors are ignored during lid-closed states.
+  3. *Un-negotiated 5V / 500mA Fallback*: Because the workqueue never executes while suspended, the power brick remains at 5V baseline, and the charger IC restricts input current limit to standard SDP 500mA (2.5W).
+- **Resolution**:
+  1. In `system/etc/systemd/logind.conf.d/yogabook.conf`, set `LidSwitchIgnoreInhibited=no` to ensure high-level inhibitor locks on `handle-lid-switch:sleep` are strictly honored by systemd-logind even when the lid is closed.
+  2. Implement an automated negotiator helper (`bin/yogabook-charger-negotiate`) and system service (`yogabook-charge-negotiate.service`) triggered by udev on charger connection (`65-yogabook-charging.rules`).
+  3. The service acquires a block inhibitor on `handle-lid-switch:sleep` for up to 25 seconds, holding the SoC awake long enough for `bq25890_pump_express_work` to pulse the charger and lock in 11.3V / 12V high-voltage charging (`input_current_limit >= 2000000`).
+  4. Once 12V is negotiated, the lock is released, allowing the system to cleanly resume `s2idle` while the hardware continues charging at full 24W power throughout standby.
+- **Prevention Pattern**:
+  When proprietary or software-assisted fast charging protocols (Pump Express, Quick Charge, USB PD policy engines) depend on kernel workqueues or userspace daemons to negotiate voltage/current steps, never allow the OS to immediately re-enter low-power sleep states upon charger connection. Always configure power managers (`LidSwitchIgnoreInhibited=no`) and hold a temporary wake/sleep inhibitor on charger insertion to guarantee protocol negotiation completes before entering deep suspend.
+

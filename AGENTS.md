@@ -107,6 +107,12 @@ yogabook-config/
 - Pacman 7 enforces Landlock filesystem sandboxing by default. On kernels lacking Landlock support, `alpm_sandbox_setup_child` fails.
 - `pamac_fix.so` intercepts this call and returns `0` (success), enabling `libpamac` and graphical app store updates without error.
 
+### 5. Fast Charging & Sleep-Hold Negotiator (`bin/yogabook-charger-negotiate`)
+- The Yoga Book uses a Texas Instruments BQ25892 charger paired with the official Lenovo 24W MediaTek Pump Express+ (PE+) adapter.
+- The 12V / 11.3V voltage negotiation is driven in software by the kernel workqueue `bq25890_pump_express_work`.
+- In connected standby (`s2idle`) with the lid closed, `systemd-logind` would immediately re-suspend before the 5-second PE+ negotiation timer could elapse, trapping the charger in 5V / 500mA (~2W) trickle mode.
+- `bin/yogabook-charger-negotiate` and `yogabook-charge-negotiate.service` (triggered by `65-yogabook-charging.rules`) acquire a `systemd-inhibit` lock on `handle-lid-switch:sleep` for up to 25 seconds upon AC plug. This holds the SoC awake long enough to lock in 12V (24W) high-voltage fast charging before returning cleanly to sleep.
+
 ---
 
 ## 🤖 Instructions for AI Agents

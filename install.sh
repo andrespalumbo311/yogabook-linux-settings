@@ -57,6 +57,7 @@ link_file "$REPO_DIR/bin/close-window"        "$HOME_DIR/.local/bin/close-window
 link_file "$REPO_DIR/bin/zenity-askpass"      "$HOME_DIR/.local/bin/zenity-askpass"
 link_file "$REPO_DIR/bin/fix-lan-mouse"        "$HOME_DIR/.local/bin/fix-lan-mouse"
 link_file "$REPO_DIR/bin/xdg-user-dir"        "$HOME_DIR/.local/bin/xdg-user-dir"
+link_file "$REPO_DIR/bin/yogabook-charger-negotiate" "$HOME_DIR/.local/bin/yogabook-charger-negotiate"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
 fi
@@ -132,6 +133,15 @@ if [[ "${1:-}" == "--system" ]]; then
     fi
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" /etc/udev/rules.d/62-yogabook-keyboard.rules
+    fi
+    if [ -f "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" /etc/udev/rules.d/65-yogabook-charging.rules
+    fi
+    if [ -f "$REPO_DIR/bin/yogabook-charger-negotiate" ]; then
+        sudo install -Dm755 "$REPO_DIR/bin/yogabook-charger-negotiate" /usr/local/bin/yogabook-charger-negotiate
+    fi
+    if [ -f "$REPO_DIR/system/etc/systemd/system/yogabook-charge-negotiate.service" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/systemd/system/yogabook-charge-negotiate.service" /etc/systemd/system/yogabook-charge-negotiate.service
     fi
     if [ -f "$REPO_DIR/system/etc/modprobe.d/brcmfmac.conf" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/modprobe.d/brcmfmac.conf" /etc/modprobe.d/brcmfmac.conf

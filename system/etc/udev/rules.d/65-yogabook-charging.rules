@@ -1,0 +1,8 @@
+# ==============================================================================
+# Yoga Book (YB1-X91F) Fast Charging / Pump Express Udev Rules
+# Triggers yogabook-charge-negotiate.service when AC adapter is connected,
+# ensuring the system does not re-suspend before 12V negotiation completes.
+# ==============================================================================
+
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="cht_wcove_pwrsrc", ATTR{online}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="yogabook-charge-negotiate.service"
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="bq25890-charger-0", ATTR{online}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="yogabook-charge-negotiate.service"

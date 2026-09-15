@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# yogabook-charger-negotiate
+# Holds a sleep/lid inhibitor lock to allow bq25890_pump_express_work in the
+# kernel to complete MediaTek Pump Express+ high-voltage (12V) negotiation.
+# ==============================================================================
+
+set -euo pipefail
+
+CHARGER_LIMIT_SYSFS="/sys/class/power_supply/bq25890-charger-0/input_current_limit"
+PWRSRC_ONLINE_SYSFS="/sys/class/power_supply/cht_wcove_pwrsrc/online"
+
+ONLINE="$(cat "$PWRSRC_ONLINE_SYSFS" 2>/dev/null || echo 0)"
+CURRENT_LIMIT="$(cat "$CHARGER_LIMIT_SYSFS" 2>/dev/null || echo 0)"
+
+logger -t yogabook-charger "Charger event triggered (online=${ONLINE}, input_limit=${CURRENT_LIMIT} uA)"
+
+# If AC is not connected, exit immediately
+if [ "$ONLINE" != "1" ]; then
+    exit 0
+fi
+
+# If already operating at fast charge limit (>= 2A / 2000000 uA), nothing to do
+if [ "$CURRENT_LIMIT" -ge 2000000 ]; then
+    logger -t yogabook-charger "Fast charging already active (limit: ${CURRENT_LIMIT} uA). No negotiation needed."
+    exit 0
+fi
+
+# Acquire high-level inhibitor on sleep and lid switch actions so systemd-logind
+# does NOT re-suspend the machine while the kernel workqueue pulses Pump Express.
+exec systemd-inhibit \
+    --what="handle-lid-switch:sleep" \
+    --who="yogabook-charger" \
+    --why="Allow Pump Express high-voltage negotiation to complete" \
+    --mode=block \
+    bash -c '
+        logger -t yogabook-charger "Charger connected. Holding sleep lock for Pump Express negotiation..."
+
+        # Poll until fast charging is negotiated (up to 25 seconds)
+        for i in $(seq 1 25); do
+            ONLINE="$(cat /sys/class/power_supply/cht_wcove_pwrsrc/online 2>/dev/null || echo 0)"
+            if [ "$ONLINE" != "1" ]; then
+                logger -t yogabook-charger "Charger disconnected during negotiation. Releasing lock."
+                exit 0
+            fi
+
+            LIMIT="$(cat /sys/class/power_supply/bq25890-charger-0/input_current_limit 2>/dev/null || echo 0)"
+            if [ "$LIMIT" -ge 2000000 ]; then
+                logger -t yogabook-charger "Pump Express 12V fast charging successfully negotiated (${LIMIT} uA). Releasing sleep lock."
+                exit 0
+            fi
+
+            sleep 1
+        done
+
+        logger -t yogabook-charger "Pump Express negotiation timed out (standard 5V charger). Releasing sleep lock."
+    '
