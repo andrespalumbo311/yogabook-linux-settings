@@ -16,6 +16,8 @@ Features:
 
 import sys
 import os
+import gc
+import ctypes
 import atexit
 import signal
 import subprocess
@@ -260,6 +262,11 @@ class YogaBookLauncher(Gtk.Window):
     def hide_launcher(self):
         self.search_entry.set_text("")
         self.set_visible(False)
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
     def on_toggle_signal(self):
         if self.get_visible():
@@ -340,6 +347,11 @@ def main():
     else:
         # Pre-warm GSK shaders and layout offscreen
         app.set_visible(False)
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
     loop.run()
 

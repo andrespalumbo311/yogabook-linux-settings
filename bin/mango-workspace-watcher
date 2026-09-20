@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Event-driven MangoWC workspace watcher for Waybar
+# Streams workspace/tag changes via IPC and signals Waybar immediately.
+# Eliminates periodic polling and reduces idle CPU usage to 0.0%.
+
+cache="/tmp/mango_tags.cache"
+
+# Write initial state
+mmsg get all-tags 2>/dev/null > "$cache"
+pkill -RTMIN+1 waybar 2>/dev/null
+
+# Stream tag events directly from MangoWC IPC socket
+exec mmsg watch all-tags 2>/dev/null | while IFS= read -r line; do
+    if [ -n "$line" ]; then
+        printf "%s\n" "$line" > "$cache"
+        pkill -RTMIN+1 waybar 2>/dev/null
+    fi
+done

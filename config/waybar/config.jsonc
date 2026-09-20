@@ -37,44 +37,44 @@
     "custom/ws1": {
         "exec": "/home/andres/.local/bin/ws-status 1",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,1; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,1"
     },
     "custom/ws2": {
         "exec": "/home/andres/.local/bin/ws-status 2",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,2; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,2"
     },
     "custom/ws3": {
         "exec": "/home/andres/.local/bin/ws-status 3",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,3; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,3"
     },
     "custom/ws4": {
         "exec": "/home/andres/.local/bin/ws-status 4",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,4; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,4"
     },
     "custom/ws5": {
         "exec": "/home/andres/.local/bin/ws-status 5",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,5; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,5"
     },
     "custom/ws6": {
         "exec": "/home/andres/.local/bin/ws-status 6",
         "return-type": "json",
-        "interval": 1,
+        "interval": "once",
         "signal": 1,
-        "on-click": "mmsg dispatch view,6; rm -f /tmp/mango_tags.cache; sleep 0.05; pkill -RTMIN+1 waybar"
+        "on-click": "mmsg dispatch view,6"
     },
     "clock": {
         "format": "{:%a %d %b  %H:%M}",

@@ -4,15 +4,8 @@
 target="${1:-1}"
 cache="/tmp/mango_tags.cache"
 
-# Shared cache refreshed if older than 0.2s
-now=$(date +%s%3N 2>/dev/null || date +%s)
-mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
-mtime_ms=$((mtime * 1000))
-diff=$((now - mtime_ms))
-
-if [ ! -f "$cache" ] || [ "$diff" -gt 300 ]; then
-    tmp="/tmp/mango_tags.$$.tmp"
-    mmsg get all-tags 2>/dev/null > "$tmp" && mv -f "$tmp" "$cache" 2>/dev/null
+if [ ! -s "$cache" ]; then
+    mmsg get all-tags 2>/dev/null > "$cache"
 fi
 
 awk -v target="$target" -F'[{}]' '

@@ -1,0 +1,14 @@
+[Unit]
+Description=MangoWC Workspace Event Watcher for Waybar
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/home/andres/.local/bin/mango-workspace-watcher
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=graphical-session.target

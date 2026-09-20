@@ -623,3 +623,127 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   When proprietary or software-assisted fast charging protocols (Pump Express, Quick Charge, USB PD policy engines) depend on kernel workqueues or userspace daemons to negotiate voltage/current steps, never allow the OS to immediately re-enter low-power sleep states upon charger connection. Never rely on cached sysfs limit attributes to infer active charger state across disconnects; always hold unconditional wake/sleep inhibitors upon connection to guarantee fresh protocol renegotiation.
 
+---
+
+## 27. Icon Font Usurping Unicode Color Emoji Fallback in Fontconfig
+
+- **Date**: 2026-09-18
+- **Subsystem**: Typography / Desktop Rendering / Fontconfig (`noto-fonts-emoji`, `fontconfig`, `Font Awesome`, GTK/Wayland)
+- **Symptoms**:
+  - Emoji characters render as missing blocks/tofu or black-and-white icon approximations instead of standard full-color emojis.
+  - Querying `fc-match emoji` returns non-emoji fallback fonts (e.g. `OpenDyslexic` or `Liberation`).
+  - Even after installing `noto-fonts-emoji`, querying generic font fallbacks for emoji codepoints (e.g. `fc-match "sans-serif:charset=1f600"`) resolves to icon fonts such as `Font Awesome 7 Free` instead of `Noto Color Emoji`.
+- **Root Cause**:
+  1. *Missing Base Emoji Package*: Minimal Arch installations lack a dedicated color emoji font (`noto-fonts-emoji`).
+  2. *Language Weighting Distortion in Fontconfig Matching*: Color emoji fonts (such as Google Noto Color Emoji) do not advertise standard natural language tags (like `en` or `it`). Conversely, symbol/icon fonts (such as `Font Awesome`) often declare coverage for standard Latin languages (`lang: en`). During fallback matching for generic families (`sans-serif`, `monospace`), Fontconfig awards higher scoring to fonts matching the user's active system locale, causing monochrome icon fonts to match ahead of color emojis.
+  3. *Digit/Punctuation Hijacking from Aggressive Strong Prepending*: Blindly prepending `Noto Color Emoji` with strong binding at the pattern level overrides standard ASCII digits (0–9) and punctuation (`#`, `*`), rendering numbers as giant boxed keycap emojis.
+- **Resolution**:
+  1. Install `noto-fonts-emoji` via pacman.
+  2. Create a declarative `fonts.conf` (`~/.config/fontconfig/fonts.conf` symlinked from `~/yogabook-config/config/fontconfig/fonts.conf`) providing strong `<alias>` bindings for `sans-serif`, `system-ui`, `serif`, and `monospace` that prioritize the primary text/symbol font (`Adwaita Sans`, `JetBrainsMono Nerd Font Propo`) first, followed immediately by `Noto Color Emoji` for missing glyphs.
+  3. Rebuild user font cache (`fc-cache -fv`) and reload bar/notification daemons.
+- **Prevention Pattern**:
+  In desktop environments where icon fonts (Font Awesome, Nerd Fonts) coexist with color emojis, never rely on default Fontconfig fallback heuristics across locale boundaries. Explicitly declare multi-tiered font family fallbacks with primary text fonts listed first (to safeguard ASCII digits and punctuation) and color emoji fonts declared as the immediate secondary fallback before generic symbol fonts.
+
+---
+
+## 28. GTK Touch Kinetic Scrolling & Micro-Jitter Zoom Conflicts in Wayland Canvas Applications
+
+- **Date**: 2026-09-20
+- **Subsystem**: Touch Input / Wayland Compositor / Canvas Rendering (`xournalpp`, `GTK3`, `libinput`, `MangoWC`)
+- **Symptoms**:
+  - Single-finger touchscreen scrolling in GTK3 canvas/note-taking applications (e.g. Xournal++) behaves erratically: scrolling jumps violently across pages, stutters, bounces back and forth, or flickers.
+  - Panning with a single finger intermittently triggers unwanted micro-zooms or canvas scale variations.
+- **Root Cause**:
+  1. *GTK Kinetic/Inertial Velocity Feedback*: In GTK3 under Wayland, enabling built-in kinetic/inertial scrolling (`gtkTouchInertialScrolling=true`) causes GTK to generate synthetic momentum vectors for touch releases. In applications managing custom canvas positioning and redraw viewports (like Xournal++), these kinetic updates collide with the application's internal page layout engine, leading to overshooting and erratic page jumps.
+  2. *Zero-Threshold Pinch-to-Zoom Trigger*: Setting `touchZoomStartThreshold=0` causes any microscopic contact area fluctuation or sensor jitter from a single finger to be classified as a pinch gesture rather than a single-finger pan.
+  3. *Unmapped Touch Tool Fallback*: Leaving the touch device tool unassigned (`tool="none"`) defers single-finger gestures to generic container scrolling instead of the optimized internal canvas hand/pan tool.
+- **Resolution**:
+  1. In `~/.config/xournalpp/settings.xml`, disable GTK inertial scrolling: `<property name="gtkTouchInertialScrolling" value="false"/>`.
+  2. Increase touch zoom start threshold to filter out finger jitter: `<property name="touchZoomStartThreshold" value="15"/>`.
+  3. Explicitly assign the touch tool to pan: `<data name="touch"><attribute name="tool" type="string" value="hand"/></data>`.
+- **Prevention Pattern**:
+  In specialized GTK-based canvas, drawing, or document-viewing applications on Wayland touchscreens, disable GTK-level kinetic/inertial scrolling in favor of direct 1:1 input tracking, enforce a non-zero threshold for multi-touch pinch gestures, and bind touch input explicitly to hand/pan tools.
+
+---
+
+## 29. Chromium/Brave GPU Hangs, Vulkan Driver Collisions & Video Stream Macroblock Corruption on Intel Cherryview
+
+- **Date**: 2026-09-20
+- **Subsystem**: Browser Graphics Pipeline / VA-API Acceleration / GPU Reset (`brave`, `chromium`, `i915`, `vulkan_hasvk`, `VA-API`)
+- **Symptoms**:
+  - Video playback (e.g. YouTube in Brave or Chromium) exhibits periodic pixelated macroblocks or video corruption across portions of the frame.
+  - Kernel logs show:
+    ```text
+    i915 0000:00:02.0: [drm] GPU HANG: ecode 8:1:8fd8ffff, in brave [...]
+    i915 0000:00:02.0: [drm] Resetting rcs0 for stopped heartbeat on rcs0
+    i915 0000:00:02.0: [drm] brave[...] context reset due to GPU hang
+    ```
+  - Browser logs exhibit Mesa warnings:
+    `MESA-INTEL: warning: ... anv_device.c: The kernel reported a GTT size larger than 2 GiB but not support for 48-bit addresses`
+    along with repeated VSync presentation errors (`GetVSyncParametersIfAvailable() failed`).
+- **Root Cause**:
+  1. *Browser Wrapper Flags Divergence*: Brave launches via `/usr/bin/brave`, which reads solely `~/.config/brave-flags.conf` rather than `chromium-flags.conf`. If `brave-flags.conf` is missing, Brave defaults to running under X11/Xwayland (`--ozone-platform=x11`) without platform or GPU overrides.
+  2. *Legacy Vulkan Driver (`vulkan_hasvk`) Instability*: When Vulkan is present on the system, modern Chromium/Brave defaults to Vulkan compositing. On Intel Cherryview Gen8 graphics (Atom x5-Z8550), Mesa's `vulkan_hasvk` driver has known GTT addressing and memory management flaws that trigger `rcs0` engine hangs and kernel context resets. During reset, active video textures in VRAM are corrupted, producing visible pixelation/macroblocks before recovery.
+  3. *Unaccelerated VA-API & Missing LinuxGL Pipeline*: Without explicit flags (`VaapiVideoDecodeLinuxGL`, `--ignore-gpu-blocklist`, `--enable-zero-copy`), the browser does not initialize VA-API properly under Wayland with the OpenGL ES/EGL backend.
+- **Resolution**:
+  1. Create `config/brave-flags.conf` and `config/chromium-flags.conf` in the repository and symlink them to `~/.config/`.
+  2. Declare the required performance and stability flags:
+     ```text
+     --ozone-platform=wayland
+     --disable-features=Vulkan
+     --enable-features=VaapiVideoDecodeLinuxGL
+     --ignore-gpu-blocklist
+     --enable-gpu-rasterization
+     --enable-zero-copy
+     ```
+  3. Update `install.sh` to ensure both browser flag files are idempotently linked.
+- **Prevention Pattern**:
+  When deploying Chromium derivatives (Brave, Edge, Vivaldi) on minimal Wayland installations with low-power SoCs, never assume flags files are shared across browser flavors. Always maintain browser-specific flag definitions (`brave-flags.conf`, `chromium-flags.conf`) that disable unstable Vulkan drivers and enforce mature OpenGL + VA-API hardware acceleration pipelines.
+
+---
+
+## 30. Periodic Subprocess Fork Storms in Minimal Status Bars & Native PipeWire Filter-Chain Migration
+
+- **Date**: 2026-09-20
+- **Subsystem**: Desktop Shell & Audio Engine (`Waybar`, `MangoWC`, `EasyEffects`, `PipeWire`, `Intel Cherryview`)
+- **Symptoms**:
+  - Waybar consuming ~1% continuous CPU in idle on Intel Atom x5-Z8550.
+  - EasyEffects consuming ~204 MB RAM and ~1.8% CPU continuously even with no active audio stream.
+  - Periodic CPU wakeups preventing cores from sustaining deep C-states (C6/C7).
+- **Root Cause**:
+  1. *Subprocess Polling Storm*: In `config/waybar/config.jsonc`, workspace indicators (`custom/ws1`..`custom/ws6`) were polled every second (`"interval": 1`). Each second, Waybar forked 6 bash scripts, which in turn spawned `date`, `stat`, `mmsg`, and `awk` (~25–30 process forks/s). On an in-order Atom CPU, this saturated cache and triggered constant context switches.
+  2. *Heavyweight Audio Framework Overhead*: `easyeffects --service-mode` is a full Qt6/C++ application running in the background. While providing essential speaker EQ, it occupied over 200 MB RSS (5% of 4GB RAM) and ran continuous DSP processing.
+- **Resolution**:
+  1. Converted Waybar workspace indicators to event-driven signals: created [`bin/mango-workspace-watcher`](file:///home/andres/yogabook-config/bin/mango-workspace-watcher) running `mmsg watch all-tags` and signaling Waybar via `SIGRTMIN+1`, changing module intervals in `config/waybar/config.jsonc` to `"interval": "once"`.
+  2. Ported the 7-band speaker correction profile directly into native PipeWire [`config/pipewire/pipewire.conf.d/20-yogabook-dsp.conf`](file:///home/andres/yogabook-config/config/pipewire/pipewire.conf.d/20-yogabook-dsp.conf) (`libpipewire-module-filter-chain`), completely disabling `easyeffects.service` and freeing ~204 MB RAM with 0.0% idle CPU.
+  3. Integrated `ctypes.CDLL('libc.so.6').malloc_trim(0)` into [`bin/yogabook-launcher`](file:///home/andres/yogabook-config/bin/yogabook-launcher) and [`bin/yogabook-control-center`](file:///home/andres/yogabook-config/bin/yogabook-control-center), dropping launcher RSS from 130 MB to 75 MB.
+  4. Added a CPU Energy Performance Bias (EPB) toggle tile to [`bin/yogabook-control-center`](file:///home/andres/yogabook-config/bin/yogabook-control-center) with unprivileged sysfs access via udev rule [`system/etc/udev/rules.d/70-yogabook-cpu-epb.rules`](file:///home/andres/yogabook-config/system/etc/udev/rules.d/70-yogabook-cpu-epb.rules).
+- **Prevention Pattern**:
+  On low-power, memory-constrained SoCs (Intel Atom, ARM Cortex-A53/A55):
+  1. Never poll compositor state with periodic shell forks; always bridge compositor IPC streams (`watch`) directly to status bar signals.
+  2. Avoid heavyweight GUI/framework runtime daemons for background audio DSP when native audio server modules (`filter-chain`) can perform the task in-process with 0 idle overhead.
+  3. Trim resident Python/GTK4 heap memory via `malloc_trim` to prevent unmapped pages from inflating resident memory.
+
+---
+
+## 31. Wayland Fractional Scaling Buffer/Viewport Desynchronization in Chromium/Brave
+
+- **Date**: 2026-09-20
+- **Subsystem**: Browser UI Rendering / Wayland Fractional Scaling / Compositor Layout (`brave`, `chromium`, `MangoWC`, `Niri`, `wp_fractional_scale_v1`)
+- **Symptoms**:
+  - In tiling or horizontal scroller window layouts (e.g. Niri or MangoWC `scroller`), Brave windows exhibit visual rendering glitches upon resizing or mapping.
+  - A vertical black bar appears on the right edge of the window, cutting off UI elements (address bar, tab strip, web content).
+  - Alternatively, window content intermittently renders beyond the compositor's window boundaries, clipping into adjacent gaps or windows.
+- **Root Cause**:
+  1. *Wayland Fractional Scale Protocol Mismatch*: Under native Wayland (`--ozone-platform=wayland`), modern Chromium/Brave enables `WaylandFractionalScaleV1` (`wp_fractional_scale_v1`) by default.
+  2. *Buffer vs Viewport Rounding Discrepancy*: When using non-integer display scaling (e.g. `scale: 1.5`), Chromium's internal compositor computes buffer allocations and viewporter destinations with floating-point math rounded to integers. In dynamic scroller/tiling layouts where window widths are continuously calculated by compositor proportions, rounding differences between the client's internal pixel buffer and the compositor's allocated surface viewport cause:
+     - Underflow (buffer smaller than viewport): the unpainted surface area displays as an empty black vertical margin on the right edge.
+     - Overflow (buffer larger than viewport): the rendered surface overflows the allocated compositor window geometry.
+- **Resolution**:
+  1. In `config/brave-flags.conf`, explicitly disable `WaylandFractionalScaleV1` alongside Vulkan:
+     ```text
+     --disable-features=Vulkan,WaylandFractionalScaleV1
+     ```
+  2. With this feature disabled, Chromium falls back to compositor-driven viewport scaling (`wp_viewport`), eliminating buffer dimension mismatches while maintaining crisp rendering and proper window geometry across scroller transitions.
+- **Prevention Pattern**:
+  When configuring Chromium-based browsers under Wayland compositors with fractional scaling (especially dynamic tiling or ribbon/scroller layouts), disable `WaylandFractionalScaleV1` if viewport clipping, black margin borders, or geometry overflows occur during window resizing.

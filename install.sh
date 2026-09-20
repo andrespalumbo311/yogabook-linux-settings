@@ -58,6 +58,8 @@ link_file "$REPO_DIR/bin/zenity-askpass"      "$HOME_DIR/.local/bin/zenity-askpa
 link_file "$REPO_DIR/bin/fix-lan-mouse"        "$HOME_DIR/.local/bin/fix-lan-mouse"
 link_file "$REPO_DIR/bin/xdg-user-dir"        "$HOME_DIR/.local/bin/xdg-user-dir"
 link_file "$REPO_DIR/bin/yogabook-charger-negotiate" "$HOME_DIR/.local/bin/yogabook-charger-negotiate"
+link_file "$REPO_DIR/bin/mango-workspace-watcher" "$HOME_DIR/.local/bin/mango-workspace-watcher"
+link_file "$REPO_DIR/bin/yogabook-set-epb"    "$HOME_DIR/.local/bin/yogabook-set-epb"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
 fi
@@ -74,7 +76,8 @@ link_file "$REPO_DIR/config/yogabook/display.json" "$HOME_DIR/.config/yogabook/d
 link_file "$REPO_DIR/config/applications/yogabook-settings.desktop" "$HOME_DIR/.local/share/applications/yogabook-settings.desktop"
 link_file "$REPO_DIR/config/environment.d/10-performance.conf" "$HOME_DIR/.config/environment.d/10-performance.conf"
 link_file "$REPO_DIR/config/xdg-desktop-portal/mango-portals.conf" "$HOME_DIR/.config/xdg-desktop-portal/mango-portals.conf"
-link_file "$REPO_DIR/config/chromium-flags.conf" "$HOME_DIR/.config/chromium-flags.conf"
+link_file "$REPO_DIR/config/fontconfig/fonts.conf" "$HOME_DIR/.config/fontconfig/fonts.conf"
+link_file "$REPO_DIR/config/brave-flags.conf"    "$HOME_DIR/.config/brave-flags.conf"
 
 # 3. GTK Touch Stack (Waybar, SwayNC, Wofi)
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config.jsonc"
@@ -95,10 +98,12 @@ link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.
 link_file "$REPO_DIR/config/systemd/user/yogabook-control-center.service" "$HOME_DIR/.config/systemd/user/yogabook-control-center.service"
 link_file "$REPO_DIR/config/systemd/user/polkit-gnome.service" "$HOME_DIR/.config/systemd/user/polkit-gnome.service"
 link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.config/systemd/user/easyeffects.service"
+link_file "$REPO_DIR/config/systemd/user/mango-workspace-watcher.service" "$HOME_DIR/.config/systemd/user/mango-workspace-watcher.service"
 
 # 5. EasyEffects & PipeWire Audio Tuning
 link_file "$REPO_DIR/config/easyeffects/output" "$HOME_DIR/.local/share/easyeffects/output"
 link_file "$REPO_DIR/config/pipewire/pipewire.conf.d/10-rates-quantum.conf" "$HOME_DIR/.config/pipewire/pipewire.conf.d/10-rates-quantum.conf"
+link_file "$REPO_DIR/config/pipewire/pipewire.conf.d/20-yogabook-dsp.conf" "$HOME_DIR/.config/pipewire/pipewire.conf.d/20-yogabook-dsp.conf"
 link_file "$REPO_DIR/config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf" "$HOME_DIR/.config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf"
 
 # 6. Setup Report
@@ -137,6 +142,12 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" /etc/udev/rules.d/65-yogabook-charging.rules
     fi
+    if [ -f "$REPO_DIR/system/etc/udev/rules.d/70-yogabook-cpu-epb.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/70-yogabook-cpu-epb.rules" /etc/udev/rules.d/70-yogabook-cpu-epb.rules
+    fi
+    if [ -f "$REPO_DIR/system/etc/systemd/zram-generator.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/systemd/zram-generator.conf" /etc/systemd/zram-generator.conf
+    fi
     if [ -f "$REPO_DIR/bin/yogabook-charger-negotiate" ]; then
         sudo install -Dm755 "$REPO_DIR/bin/yogabook-charger-negotiate" /usr/local/bin/yogabook-charger-negotiate
     fi
@@ -157,13 +168,24 @@ if [[ "${1:-}" == "--system" ]]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" /etc/polkit-1/rules.d/49-yogabook-keyboard.rules
     fi
 
-    # Suppress kernel console spam over tuigreet in systemd-boot entries
-    for boot_entry in /boot/loader/entries/yogabook.conf /boot/loader/entries/*linux.conf; do
+    if [ -f "$REPO_DIR/system/etc/tmpfiles.d/thp.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/tmpfiles.d/thp.conf" /etc/tmpfiles.d/thp.conf
+        sudo systemd-tmpfiles --create /etc/tmpfiles.d/thp.conf || true
+    fi
+    if [ -f "$REPO_DIR/system/etc/modprobe.d/i915.conf" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/modprobe.d/i915.conf" /etc/modprobe.d/i915.conf
+    fi
+    sudo systemctl enable --now fstrim.timer || true
+
+    # Performance & quiet kernel parameters in systemd-boot entries
+    for boot_entry in /boot/loader/entries/yogabook.conf /boot/loader/entries/*linux*.conf; do
         if [ -f "$boot_entry" ]; then
-            if ! grep -q "quiet" "$boot_entry"; then
-                echo "Adding quiet loglevel=3 to $boot_entry..."
-                sudo sed -i 's/\(^options .*\)/\1 quiet loglevel=3/' "$boot_entry"
-            fi
+            for param in "mitigations=off" "i915.enable_fbc=1" "transparent_hugepage=madvise" "quiet" "loglevel=3"; do
+                if ! grep -q -- "$param" "$boot_entry"; then
+                    echo "Adding $param to $boot_entry..."
+                    sudo sed -i "s/\(^options .*\)/\1 $param/" "$boot_entry"
+                fi
+            done
         fi
     done
 

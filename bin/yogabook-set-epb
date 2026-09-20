@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Helper to set CPU Energy Performance Bias across all cores (0 = performance, 6 = balance-power)
+val="${1:-6}"
+
+for f in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do
+    if [ -w "$f" ]; then
+        echo "$val" > "$f" 2>/dev/null
+    else
+        sudo -n sh -c "echo $val > $f" 2>/dev/null
+    fi
+done
