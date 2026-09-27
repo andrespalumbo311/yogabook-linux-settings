@@ -1,6 +1,6 @@
 # AGENTS.md – Guide & Architecture Reference for AI Coding Assistants
 
-Welcome, Agent. This repository contains the complete configuration, hardware workarounds, daemon scripts, and dotfiles for running **Arch Linux** on the **Lenovo Yoga Book 1st Gen (YB1-X91F / YB1-X90F series)** under **MangoWC** (lightweight wlroots Wayland compositor) and the **GTK Touch Stack (Waybar, SwayNC, Wofi)**.
+Welcome, Agent. This repository contains the complete configuration, hardware workarounds, daemon scripts, and dotfiles for running **Arch Linux** on the **Lenovo Yoga Book 1st Gen (YB1-X91F / YB1-X90F series)** under **MangoWC** (lightweight wlroots Wayland compositor) and the **Modular Touch Stack (Waybar, Mako, Native C Control Center & Launcher)**.
 
 This file serves as your primary context, architectural overview, and operational guidelines when maintaining, debugging, or extending this codebase.
 
@@ -28,14 +28,30 @@ yogabook-config/
 ├── README.md                      # Human-facing setup and usage guide
 ├── AGENTS.md                      # This file: Agent instructions and architecture guide
 ├── YOGABOOK_SETUP_REPORT.md       # Full historical & technical setup report
+├── Makefile                       # Top-level build system for all native C components
 ├── install.sh                     # Idempotent linker script (~/ paths to repo)
 │
 ├── bin/                           # User executables (symlinked to ~/.local/bin/)
-│   ├── yogabook-autorotate        # Smart posture & auto-rotation daemon (Python 3)
-│   ├── toggle-keyboard            # Instant toggle script for wvkbd virtual keyboard
-│   ├── close-window               # Safe IPC wrapper to close focused MangoWC window
+│   ├── yogabook-autorotate        # Smart posture & auto-rotation daemon (Native C, 540 KB RAM)
+│   ├── yogabook-autobrightness    # Smart ALS display auto-brightness daemon (Native C, 436 KB RAM)
+│   ├── yogabook-control-center    # Native C touch Control Center (GTK 3 + Layer-Shell, 0 MB idle)
+│   ├── toggle-control-center      # Instant toggle binary for Control Center (Native C)
+│   ├── yogabook-launcher          # Native C touch App Launcher (GTK 3 + Layer-Shell, 0 MB idle)
+│   ├── toggle-launcher            # Instant toggle binary for App Launcher (Native C)
+│   ├── yogabook-mako-status       # Real-time Mako notification & DND status provider (Native C)
+│   ├── toggle-keyboard            # Instant toggle binary for wvkbd virtual keyboard (Native C)
+│   ├── close-window               # Safe IPC window close binary for MangoWC (Native C)
+│   ├── ws-status                  # Dynamic workspace status provider for Waybar (Native C)
+│   ├── mango-workspace-watcher    # MangoWC event watcher daemon for Waybar (Native C)
 │   └── wvkbd                      # wvkbd-mobintl binary (compiled for minimal footprint)
 │
+├── src/                           # Native C source trees
+│   ├── Makefile                   # Recursive build manager for all submodules
+│   ├── control-center/            # Native C Control Center source and Makefile
+│   ├── launcher/                  # Native C Application Launcher source and Makefile
+│   ├── autorotate/                # Native C Smart Auto-Rotation source and Makefile
+│   ├── autobrightness/            # Native C Smart Auto-Brightness source and Makefile
+│   └── helpers/                   # Native C micro-helpers and watchers source and Makefile
 ├── config/                        # User dotfiles (symlinked to ~/.config/)
 │   ├── mango/
 │   │   ├── config.conf            # MangoWC compositor config (GPU/CPU optimized, Wacom mapping)
@@ -45,20 +61,17 @@ yogabook-config/
 │   ├── waybar/
 │   │   ├── config.jsonc           # Waybar top-bar (launcher, workspaces, clock, audio, battery, tray)
 │   │   └── style.css              # Touch-friendly Modern Light stylesheet
-│   ├── swaync/
-│   │   ├── config.json            # SwayNC control center (sliders for volume & backlight, toggles)
-│   │   └── style.css              # Touch control center Light stylesheet
-│   ├── wofi/
-│   │   ├── config                 # Wofi touch-friendly launcher settings (MD3)
-│   │   └── style.css              # Material Design 3 (Material You Light) stylesheet
+│   ├── mako/
+│   │   └── config                 # Mako lightweight notification daemon config (Material Light)
 │   ├── easyeffects/
 │   │   └── output/                # PipeWire DSP presets (YogaBook-Speakers, LoudnessEqualizer)
 │   └── systemd/
 │       └── user/
 │           ├── rot8.service       # User systemd service for yogabook-autorotate
+│           ├── yogabook-autobrightness.service # User systemd service for auto-brightness
 │           ├── wvkbd.service      # User systemd service for wvkbd (hidden background process)
 │           ├── waybar.service     # User systemd service for Waybar
-│           ├── swaync.service     # User systemd service for SwayNC
+│           ├── mako.service       # User systemd service for Mako notification daemon
 │           └── easyeffects.service# User systemd service for EasyEffects headless DSP daemon
 │
 └── system/                        # System configurations and low-level fixes (/etc)
@@ -85,14 +98,16 @@ yogabook-config/
 
 ## ⚙️ Core Subsystems & Technical Details
 
-### 1. Smart Auto-Rotation (`bin/yogabook-autorotate`)
-- **Sensors**: Resolves screen vs base accelerometers via `udevadm property` (`ACCEL_LOCATION=base` is physically the DISPLAY due to Lenovo firmware quirks).
+### 1. Smart Auto-Rotation (`bin/yogabook-autorotate` – Native C)
+- **Source**: `src/autorotate/main.c` (compiled with `-O2 -ludev -lm`, ~540 KB resident RAM).
+- **Sensors**: Resolves screen vs base accelerometers via `libudev` property (`ACCEL_LOCATION=base` is physically the DISPLAY due to Lenovo firmware quirks).
 - **2D Hinge Projection**: Projects gravity vectors onto the plane perpendicular to the hinge axis (X-Z cross-section). Computes real hinge opening ($0^\circ-360^\circ$) completely immune to roll tilt up to $70^\circ+$.
 - **Hinge Singularity Guard**: Freezes the mode (laptop vs tablet) when gravity aligns with the hinge axis (Y), preventing spurious flips when lifting or tilting the device.
 - **Hysteresis**:
-  - Laptop mode: opening $\le 150^\circ$ and base resting horizontal ($b_z < -0.35g$). Locks screen to landscape (`270`), disables auto-rotation.
-  - Tablet mode: opening $\ge 158^\circ$ (or flipped). Enables auto-rotation.
+  - Laptop mode: opening $\le 135.0^\circ$ and base resting horizontal ($b_z < -0.35g$). Locks screen to landscape (`270`), disables auto-rotation.
+  - Tablet mode: opening $\ge 142.0^\circ$ (or flipped). Enables auto-rotation.
 - **Table Flat-Lock**: If screen is tilted $< 53^\circ$ from horizontal ($|z| > 0.60$), orientation freezes completely so resting the device flat on a desk preserves the active orientation.
+- **Halo Keyboard Suppression**: Directly grabs/ungrabs `/dev/input/event*` nodes via `ioctl(EVIOCGRAB)` when opening $\ge 190.0^\circ$.
 
 ### 2. Wacom Create Pad Digitizer (`config/mango/config.conf`)
 - Hardware ID: `Wacom HID 169 Pen` (`0018:056A:0169` via `i2c-WCOM0019:00`).
@@ -113,6 +128,13 @@ yogabook-config/
 - In connected standby (`s2idle`) with the lid closed, `systemd-logind` would immediately re-suspend before the 5-second PE+ negotiation timer could elapse, trapping the charger in 5V / 500mA (~2W) trickle mode.
 - `bin/yogabook-charger-negotiate` and `yogabook-charge-negotiate.service` (triggered by `65-yogabook-charging.rules`) acquire a `systemd-inhibit` lock on `handle-lid-switch:sleep` for up to 25 seconds upon AC plug. This holds the SoC awake long enough to lock in 12V (24W) high-voltage fast charging before returning cleanly to sleep.
 
+### 6. Smart Auto-Brightness Daemon (`bin/yogabook-autobrightness` – Native C)
+- **Source**: `src/autobrightness/main.c` (compiled with `-O2 -lsystemd -lm`, ~436 KB resident RAM).
+- Leverages the ambient light sensor (ALS) exposed via `iio-sensor-proxy` (`net.hadess.SensorProxy`) directly via `sd-bus`.
+- Event-driven D-Bus subscriber with perceptual human-eye LUT curve, exponential moving average (EMA) noise filtration, and deadband hysteresis ($3\%$).
+- Implements fluid stepped ramping ($1\%$ per 30ms) to eliminate eye strain and abrupt lighting jumps.
+- Supports adaptive user bias: automatically detects manual slider adjustments in the Control Center / Settings and preserves the offset relative to the curve across lighting transitions.
+
 ---
 
 ## 🤖 Instructions for AI Agents
@@ -126,8 +148,9 @@ When working on this repository, you **MUST** follow these operating rules:
 2. **Reloading Services After Edits**:
    - **MangoWC**: `WAYLAND_DISPLAY=wayland-0 mmsg dispatch reload_config`
    - **Waybar**: `killall -SIGUSR2 waybar` or `systemctl --user restart waybar.service`
-   - **SwayNC**: `swaync-client -R -rs` or `systemctl --user restart swaync.service`
+   - **Mako**: `makoctl reload` or `systemctl --user restart mako.service`
    - **Rotation Daemon**: `systemctl --user restart rot8.service`
+   - **Auto-Brightness**: `systemctl --user restart yogabook-autobrightness.service`
    - **Virtual Keyboard**: `systemctl --user restart wvkbd.service`
    - **EasyEffects**: `systemctl --user restart easyeffects.service` or `easyeffects -l <preset>`
    - **Systemd User Units**: `systemctl --user daemon-reload`
@@ -140,3 +163,10 @@ When working on this repository, you **MUST** follow these operating rules:
    - **ZERO SENSITIVE DATA**: This repository is published publicly on GitHub.
    - **NEVER** commit passwords, sudo credentials, personal access tokens, SSH private keys, API keys, or private IP networks.
    - Maintain documentation integrity and keep commit messages clear following Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`).
+
+5. **Language & Architecture Best Practice: Avoid Python, Favor Native C**:
+   - **Hardware Constraints**: The Yoga Book runs on an ultra-low-power Intel Atom x5-Z8550 with 4GB LPDDR3 and eMMC storage.
+   - **RAM & CPU Impact**: Every resident Python daemon wastes 20–35 MB of fixed RAM for the CPython runtime and introduces periodic garbage collection wakeups. Native C implementations consume only **~400–600 KB of RAM** and run at **0% idle CPU**.
+   - **Interactive Latency**: Interactive touch/gesture helpers and Waybar providers written in Bash suffer 15–30 ms fork/exec overhead on low-IPC Atom cores. Native C binaries execute in **<0.5 ms**.
+   - **C-Native First**: For all background services, status watchers, and interactive helpers, **strictly avoid Python and Bash pipelines**. Implement them in clean, single-threaded native C inside [`src/`](file:///home/andres/yogabook-config/src/) integrated into the top-level [`Makefile`](file:///home/andres/yogabook-config/Makefile).
+   - **Avoid Rust on Device**: Avoid introducing Rust on-device; `cargo` builds trigger severe thermal throttling on the fanless chassis, consume gigabytes of eMMC storage, and thrash ZRAM swap. In contrast, `gcc -O2` compiles the entire native C stack in under 2 seconds.

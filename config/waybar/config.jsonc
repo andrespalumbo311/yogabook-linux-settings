@@ -79,11 +79,11 @@
     "clock": {
         "format": "{:%a %d %b  %H:%M}",
         "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
-        "on-click": "swaync-client -t -sw"
+        "on-click": "/home/andres/.local/bin/toggle-control-center"
     },
     "custom/keyboard": {
         "format": "",
-        "tooltip": "Tastiera Virtuale (Mostra/Nascondi)",
+        "tooltip": false,
         "on-click": "/home/andres/.local/bin/toggle-keyboard"
     },
     "network": {
@@ -113,28 +113,24 @@
         "spacing": 8
     },
     "custom/notification": {
-        "tooltip": "Centro di Controllo Touch (Tasto Dx: Notifiche)",
+        "tooltip": true,
         "format": "{icon}",
         "format-icons": {
-            "notification": "󱅫",
-            "none": "󰂚",
-            "dnd-notification": "󱅫",
-            "dnd-none": "󰂛",
-            "inhibited-notification": "󱅫",
-            "inhibited-none": "󰂚",
-            "dnd-inhibited-notification": "󱅫",
-            "dnd-inhibited-none": "󰂛"
+            "dnd": "󰂛",
+            "default": "󰂚"
         },
         "return-type": "json",
-        "exec-if": "which swaync-client",
-        "exec": "swaync-client -swb",
+        "exec": "/home/andres/.local/bin/yogabook-mako-status",
+        "interval": 2,
+        "signal": 9,
         "on-click": "/home/andres/.local/bin/toggle-control-center",
-        "on-click-right": "swaync-client -t -sw",
+        "on-click-right": "makoctl mode -t dnd && pkill -RTMIN+9 waybar",
+        "on-click-middle": "makoctl restore",
         "escape": true
     },
     "custom/close": {
         "format": "",
-        "tooltip": "Chiudi finestra attiva",
+        "tooltip": false,
         "on-click": "/home/andres/.local/bin/close-window"
     }
 }

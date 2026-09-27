@@ -68,7 +68,7 @@
 }
 
 /* ==============================================================================
- * DMS / Material You Quick Settings Tiles (Buttons Grid)
+ * Material You Quick Settings Tiles (Buttons Grid)
  * ============================================================================== */
 .widget-buttons-grid {
   margin: 2px 0 8px 0;
@@ -101,7 +101,7 @@
   background-color: #e2e7f0;
 }
 
-/* Active Quick Tile (Google Blue solid fill like DMS / Android) */
+/* Active Quick Tile (Google Blue solid fill like Android Material You) */
 .widget-buttons-grid flowboxchild > button.toggle:checked,
 .widget-buttons-grid flowboxchild > button.active {
   background-color: #0b57d0;

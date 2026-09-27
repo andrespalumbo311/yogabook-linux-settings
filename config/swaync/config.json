@@ -20,16 +20,13 @@
   "fit-to-screen": false,
   "widgets": [
     "title",
-    "buttons-grid",
-    "volume",
-    "backlight",
     "notifications"
   ],
   "widget-config": {
     "title": {
-      "text": "Controllo Rapido",
+      "text": "Notifiche",
       "clear-all-button": true,
-      "button-text": "Cancella"
+      "button-text": "Cancella tutto"
     },
     "buttons-grid": {
       "buttons-per-row": 2,

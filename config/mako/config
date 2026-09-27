@@ -1,0 +1,70 @@
+# ==============================================================================
+# Mako Configuration – Lenovo Yoga Book (YB1-X91F)
+# Lightweight Wayland Notification Daemon (Material Light / Adwaita Theme)
+# ==============================================================================
+
+# Font & Typography
+font=Adwaita Sans 11
+
+# Layout & Positioning
+anchor=top-right
+layer=overlay
+width=360
+height=140
+margin=10
+outer-margin=46,12,0,0
+padding=12,16
+
+# Geometry & Borders
+border-size=1
+border-color=#d0d5dd
+border-radius=16
+
+# Colors (Material Light Theme matching Waybar & Control Center)
+background-color=#ffffffee
+text-color=#1f1f1f
+progress-color=over #0b57d0ff
+
+# Icons
+icons=1
+max-icon-size=48
+icon-border-radius=10
+icon-location=left
+icon-path=/usr/share/icons/Papirus-Light:/usr/share/icons/Papirus:/usr/share/icons/hicolor
+
+# Formats & Limits
+format=<b>%s</b>\n%b
+max-visible=5
+max-history=20
+history=1
+default-timeout=5000
+ignore-timeout=0
+
+# Interactions & Touch
+on-touch=dismiss
+on-button-left=invoke-default-action
+on-button-right=dismiss
+on-button-middle=dismiss-all
+
+# Urgency Criteria
+[urgency=low]
+border-color=#e0e3ea
+default-timeout=3000
+
+[urgency=normal]
+border-color=#c7d2fe
+default-timeout=5000
+
+[urgency=critical]
+background-color=#fee2e2ee
+text-color=#7f1d1d
+border-color=#ef4444
+default-timeout=0
+
+# Do Not Disturb (DND) Mode
+[mode=dnd]
+invisible=1
+
+# Always display critical notifications even in DND
+[mode=dnd urgency=critical]
+invisible=0

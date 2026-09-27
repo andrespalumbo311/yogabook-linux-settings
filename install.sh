@@ -43,6 +43,9 @@ link_file() {
 
 echo "=== Linking Yoga Book User Configurations ==="
 
+# Build all C binaries
+make -C "$REPO_DIR"
+
 # 1. Executables (~/.local/bin)
 link_file "$REPO_DIR/bin/yogabook-autorotate" "$HOME_DIR/.local/bin/yogabook-autorotate"
 link_file "$REPO_DIR/bin/toggle-keyboard"     "$HOME_DIR/.local/bin/toggle-keyboard"
@@ -60,6 +63,8 @@ link_file "$REPO_DIR/bin/xdg-user-dir"        "$HOME_DIR/.local/bin/xdg-user-dir
 link_file "$REPO_DIR/bin/yogabook-charger-negotiate" "$HOME_DIR/.local/bin/yogabook-charger-negotiate"
 link_file "$REPO_DIR/bin/mango-workspace-watcher" "$HOME_DIR/.local/bin/mango-workspace-watcher"
 link_file "$REPO_DIR/bin/yogabook-set-epb"    "$HOME_DIR/.local/bin/yogabook-set-epb"
+link_file "$REPO_DIR/bin/yogabook-autobrightness" "$HOME_DIR/.local/bin/yogabook-autobrightness"
+link_file "$REPO_DIR/bin/yogabook-mako-status"     "$HOME_DIR/.local/bin/yogabook-mako-status"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
 fi
@@ -79,26 +84,25 @@ link_file "$REPO_DIR/config/xdg-desktop-portal/mango-portals.conf" "$HOME_DIR/.c
 link_file "$REPO_DIR/config/fontconfig/fonts.conf" "$HOME_DIR/.config/fontconfig/fonts.conf"
 link_file "$REPO_DIR/config/brave-flags.conf"    "$HOME_DIR/.config/brave-flags.conf"
 
-# 3. GTK Touch Stack (Waybar, SwayNC, Wofi)
+# 3. GTK Touch Stack (Waybar, Mako, SwayNC)
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config.jsonc"
 link_file "$REPO_DIR/config/waybar/config.jsonc" "$HOME_DIR/.config/waybar/config"
 link_file "$REPO_DIR/config/waybar/style.css"    "$HOME_DIR/.config/waybar/style.css"
+link_file "$REPO_DIR/config/mako/config"         "$HOME_DIR/.config/mako/config"
 link_file "$REPO_DIR/config/swaync/config.json"  "$HOME_DIR/.config/swaync/config.json"
 link_file "$REPO_DIR/config/swaync/style.css"    "$HOME_DIR/.config/swaync/style.css"
-link_file "$REPO_DIR/config/wofi/config"         "$HOME_DIR/.config/wofi/config"
-link_file "$REPO_DIR/config/wofi/style.css"      "$HOME_DIR/.config/wofi/style.css"
-link_file "$REPO_DIR/config/nwg-drawer/drawer.css" "$HOME_DIR/.config/nwg-drawer/drawer.css"
+
 
 # 4. Systemd User Services
 link_file "$REPO_DIR/config/systemd/user/rot8.service"   "$HOME_DIR/.config/systemd/user/rot8.service"
 link_file "$REPO_DIR/config/systemd/user/wvkbd.service"  "$HOME_DIR/.config/systemd/user/wvkbd.service"
 link_file "$REPO_DIR/config/systemd/user/waybar.service" "$HOME_DIR/.config/systemd/user/waybar.service"
+link_file "$REPO_DIR/config/systemd/user/mako.service"   "$HOME_DIR/.config/systemd/user/mako.service"
 link_file "$REPO_DIR/config/systemd/user/swaync.service" "$HOME_DIR/.config/systemd/user/swaync.service"
-link_file "$REPO_DIR/config/systemd/user/yogabook-launcher.service" "$HOME_DIR/.config/systemd/user/yogabook-launcher.service"
-link_file "$REPO_DIR/config/systemd/user/yogabook-control-center.service" "$HOME_DIR/.config/systemd/user/yogabook-control-center.service"
 link_file "$REPO_DIR/config/systemd/user/polkit-gnome.service" "$HOME_DIR/.config/systemd/user/polkit-gnome.service"
 link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.config/systemd/user/easyeffects.service"
 link_file "$REPO_DIR/config/systemd/user/mango-workspace-watcher.service" "$HOME_DIR/.config/systemd/user/mango-workspace-watcher.service"
+link_file "$REPO_DIR/config/systemd/user/yogabook-autobrightness.service" "$HOME_DIR/.config/systemd/user/yogabook-autobrightness.service"
 
 # 5. EasyEffects & PipeWire Audio Tuning
 link_file "$REPO_DIR/config/easyeffects/output" "$HOME_DIR/.local/share/easyeffects/output"
@@ -191,5 +195,8 @@ if [[ "${1:-}" == "--system" ]]; then
 
     sudo sysctl --system >/dev/null || true
     sudo systemctl daemon-reload || true
+    if command -v alsactl >/dev/null 2>&1; then
+        sudo alsactl store 1 2>/dev/null || true
+    fi
     echo "[OK] System configuration files updated."
 fi

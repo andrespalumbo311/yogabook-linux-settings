@@ -133,6 +133,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
     def _async_initial_load(self):
         self._refresh_hdmi_status()
         self._refresh_rotation_state()
+        self._refresh_autobrightness_state()
         self._refresh_active_wifi()
         self._populate_available_networks()
         self._refresh_bluetooth_devices()
@@ -250,6 +251,20 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         box_bright.append(self.lbl_bright_val)
         row_brightness.add_suffix(box_bright)
         group_dsi.add(row_brightness)
+
+        # Row 6b: Auto-Brightness Switch & Status
+        self.row_autobrightness = Adw.ActionRow()
+        self.row_autobrightness.set_title("Luminosità Automatica (Sensore ALS)")
+        self.row_autobrightness.set_subtitle("Regola la luminosità con il sensore di luce ambientale integrato")
+        self.lbl_autobright_status = Gtk.Label(label="Caricamento...")
+        self.lbl_autobright_status.add_css_class("dim-label")
+        self.row_autobrightness.add_suffix(self.lbl_autobright_status)
+
+        self.switch_autobrightness = Gtk.Switch()
+        self.switch_autobrightness.set_valign(Gtk.Align.CENTER)
+        self.switch_autobrightness.connect("notify::active", self._on_autobrightness_toggled)
+        self.row_autobrightness.add_suffix(self.switch_autobrightness)
+        group_dsi.add(self.row_autobrightness)
 
         # Row 7: Auto-Rotation Switch & Status
         self.row_rotation = Adw.ActionRow()
@@ -409,6 +424,39 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             ).start()
         self.bright_debounce_timer = None
         return GLib.SOURCE_REMOVE
+
+    def _refresh_autobrightness_state(self):
+        is_active = False
+        try:
+            res = subprocess.run(["systemctl", "--user", "is-active", "yogabook-autobrightness.service"], capture_output=True, text=True, check=False)
+            is_active = (res.stdout.strip() == "active")
+        except Exception:
+            pass
+
+        if hasattr(self, "switch_autobrightness"):
+            self.switch_autobrightness.set_active(is_active)
+
+        if is_active:
+            sub = "Attiva (Sensore ALS)"
+            state_file = f"/run/user/{os.getuid()}/yogabook-autobrightness.state"
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file, "r") as f:
+                        props = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+                        lux = props.get("lux", "0")
+                        b = props.get("brightness", "--")
+                        sub = f"Attiva: {lux} lux • {b}% retroilluminazione"
+                except Exception:
+                    pass
+            self.lbl_autobright_status.set_text(sub)
+        else:
+            self.lbl_autobright_status.set_text("Disattivata (Controllo manuale)")
+
+    def _on_autobrightness_toggled(self, switch, gparam):
+        target_state = switch.get_active()
+        cmd = "start" if target_state else "stop"
+        subprocess.run(["systemctl", "--user", cmd, "yogabook-autobrightness.service"], check=False)
+        GLib.timeout_add(600, self._refresh_autobrightness_state)
 
     def _refresh_rotation_state(self):
         is_active = False

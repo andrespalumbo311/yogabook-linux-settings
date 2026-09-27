@@ -1,0 +1,14 @@
+[Unit]
+Description=Smart Auto-Brightness Daemon for Yoga Book (ALS to intel_backlight)
+PartOf=mango-session.target
+After=mango-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+ExecStart=/home/andres/.local/bin/yogabook-autobrightness
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=mango-session.target

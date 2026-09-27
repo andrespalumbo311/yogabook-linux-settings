@@ -747,3 +747,153 @@ This document records architectural, packaging, and runtime issues encountered o
   2. With this feature disabled, Chromium falls back to compositor-driven viewport scaling (`wp_viewport`), eliminating buffer dimension mismatches while maintaining crisp rendering and proper window geometry across scroller transitions.
 - **Prevention Pattern**:
   When configuring Chromium-based browsers under Wayland compositors with fractional scaling (especially dynamic tiling or ribbon/scroller layouts), disable `WaylandFractionalScaleV1` if viewport clipping, black margin borders, or geometry overflows occur during window resizing.
+
+---
+
+## 32. Lack of Ambient Light Sensor (ALS) Display Auto-Brightness in Minimalist Wayland Environments
+
+- **Date**: 2026-09-27
+- **Subsystem**: Display Subsystem / Sensor Fusion / Ambient Light Regulation (`iio-sensor-proxy`, `intel_backlight`, `SensorProxy`, `MangoWC`)
+- **Symptoms**:
+  - The physical display does not automatically adapt its backlight to changing ambient lighting conditions (e.g. going from bright daylight into a dark room or vice versa), remaining locked at the last manual percentage.
+  - Manual adjustments via sliders or function keys are cumbersome when moving across different environments.
+- **Root Cause**:
+  1. *Compositor & Shell Scope*: Minimalist Wayland compositors (such as MangoWC, Sway, or dwl) and modular status bars / notification centers (Waybar, SwayNC) do not incorporate integrated power and display automation daemons (unlike monolithic desktop environments such as GNOME's `gnome-settings-daemon` or KDE's `powerdevil`).
+  2. *D-Bus Signal Consumer Absence*: While the Linux kernel and `iio-sensor-proxy` successfully expose ambient light sensors over D-Bus (`net.hadess.SensorProxy`), no consumer claims the light sensor (`ClaimLight`) or listens for illuminance property change events. Consequently, the hardware sensor stays unpolled and `/sys/class/backlight/intel_backlight` remains static.
+- **Resolution**:
+  1. Implement a dedicated, lightweight, event-driven user daemon ([`bin/yogabook-autobrightness`](file:///home/andres/yogabook-config/bin/yogabook-autobrightness)) bound to `mango-session.target`.
+  2. Connect to `net.hadess.SensorProxy` via GIO D-Bus, invoke `ClaimLight`, and process live `LightLevel` lux signals.
+  3. Deploy a calibrated perceptual human-eye LUT curve (logarithmic response) with:
+     - Exponential Moving Average (EMA, $\alpha = 0.35$) for noise filtering.
+     - Deadband hysteresis ($3\%$) to eliminate micro-fluctuations and flicker.
+     - Smooth stepped ramping ($1\%$ every 30ms) for natural visual adaptation.
+     - Adaptive User Bias: continuously monitors sysfs backlight to detect manual user tweaks, preserving user preference offsets across ambient light changes.
+  4. Integrate status and toggle controls directly into [`bin/yogabook-control-center`](file:///home/andres/yogabook-config/bin/yogabook-control-center) (slider icon toggle) and [`bin/yogabook-settings`](file:///home/andres/yogabook-config/bin/yogabook-settings) (dedicated ALS preference row).
+- **Prevention Pattern**:
+  In standalone or minimalist Wayland deployments on sensor-equipped hardware (laptops, 2-in-1 tablets), never expect display backlights to adjust automatically without an active mediator. Bridge standard D-Bus sensor proxies (`net.hadess.SensorProxy`) to hardware sysfs controllers using lightweight, event-driven daemons with perceptual curve mapping, hysteresis deadbands, and adaptive user bias retention.
+
+---
+
+## 33. ALSA Mixer DAPM Desynchronization & Digital Microphone Pin Inactivity in Pro-Audio Profiles
+
+- **Date**: 2026-09-27
+- **Subsystem**: Audio Capture / ALSA DAPM / PipeWire Pro-Audio Profile (`cht-yogabook`, `rt5677`, `PipeWire`, `WirePlumber`)
+- **Symptoms**:
+  - The internal microphone captures only pure digital silence (RMS = 0.00, maximum sample value 0 / 32767) in all applications (browsers, voice recorders, WebRTC).
+  - PipeWire reports default audio source volume at 100% and unmuted (`Built-in Audio Pro`), but no audio waveform or ambient noise is registered.
+- **Root Cause**:
+  1. *Pro-Audio Profile Hardware Isolation*: On the Lenovo Yoga Book Cherryview platform (`cht-yogabook`), the sound card operates under WirePlumber's `pro-audio` profile to maintain deterministic sink naming for the native PipeWire DSP speaker correction chain (`effect_input.yogabook_dsp` -> `alsa_output.platform-cht-yogabook.pro-output-0`).
+  2. *Bypassed DAPM Mixer Management*: In `pro-audio` mode, PipeWire opens raw PCM devices (`hw:1,0`) directly without configuring ALSA mixer pins or dynamic audio power management (DAPM) widgets.
+  3. *Un-asserted DMIC Pins*: The Realtek RT5677 codec requires explicit DAPM pin and mixer activation to power the MEMS digital microphone (`Int Mic Switch`), multiplex the DMIC input (`Stereo1 DMIC Mux` -> `DMIC1`, `Stereo1 ADC2 Mux` -> `DMIC`), and route it into the Stereo 1 ADC mixer (`Sto1 ADC MIXL ADC2 Switch` and `Sto1 ADC MIXR ADC2 Switch`). Because these were saved as `off`/`false` in `/var/lib/alsa/asound.state`, the codec kept the microphone input circuitry unpowered and streamed null samples.
+- **Resolution**:
+  1. Activate the internal microphone DAPM power switch and mixer routes via `amixer`:
+     - `amixer -c 1 cset name='Int Mic Switch' on`
+     - `amixer -c 1 cset name='Sto1 ADC MIXL ADC2 Switch' on`
+     - `amixer -c 1 cset name='Sto1 ADC MIXR ADC2 Switch' on`
+     - `amixer -c 1 cset name='Stereo1 DMIC Mux' DMIC1`
+     - `amixer -c 1 cset name='Stereo1 ADC2 Mux' DMIC`
+  2. Calibrate hardware capture gains: set `STO1 ADC Boost Volume` to `2` (+24 dB) and `ADC2 Capture Volume` to `33` (+7.5 dB).
+  3. Ensure playback output switches remain intact: verify `Speaker Switch = on` and default sink points to `effect_input.yogabook_dsp` (`wpctl set-default`) so that the native 7-band parametric speaker DSP filter-chain remains in the playback path.
+  4. Persist the soundcard hardware state to `/var/lib/alsa/asound.state` via `sudo alsactl store 1` so that `alsa-restore.service` reliably restores both speaker and microphone routes on every system boot.
+  5. Ensure `install.sh --system` executes `alsactl store 1` during system synchronization workflows.
+- **Prevention Pattern**:
+  When deploying low-level or `pro-audio` profiles in PipeWire to bypass high-level abstraction layers, never assume hardware codec DAPM widgets and mixer muxes will automatically be configured. Always explicitly verify that input power switches (`* Mic Switch`), ADC summing bus switches (`Sto* ADC MIX*`), and output switches (`Speaker Switch`) are active, calibrated, and persistently stored in the underlying ALSA hardware state (`asound.state`). Avoid running raw UCM enable sequences (`set _verb`) without device activation, as they reset output switches to `off`.
+
+---
+
+## 34. Interpreted Python/GTK4 Runtime Latency & Memory Overhead in On-Demand Desktop Overlays
+
+- **Date**: 2026-09-27
+- **Subsystem**: Desktop Shell / Layer-Shell Overlays / Resource Optimization (`GTK3`, `GTK4`, `PyGObject`, `GtkLayerShell`)
+- **Symptoms**:
+  - Launching quick-access desktop overlays or control panels (such as `yogabook-control-center`) from scratch takes multiple seconds (2.5 – 3.5s) on low-power SoCs (Intel Atom x5-Z8550).
+  - Attempting to mask cold-start latency by keeping the application resident in RAM as a background daemon (`yogabook-control-center.service`) wastes ~100MB to 140MB of memory 24/7 on a RAM-constrained device (4GB LPDDR3).
+- **Root Cause**:
+  1. *Dynamic Introspection Overhead*: In PyGObject, loading `Gtk 4.0`, `Gdk 4.0`, `Gtk4LayerShell 1.0`, `GLib`, and `Pango` dynamically parses megabytes of binary `.typelib` metadata files on disk on every cold invocation, resolving hundreds of C symbols and instantiating Python wrapper classes. On in-order Atom cores with eMMC storage, this phase takes ~1.2s before a single line of application logic runs.
+  2. *Double-Process Trampoline (`os.execve`)*: Python wrapper scripts that dynamically prepend libraries to `LD_PRELOAD` restart the Python interpreter via `os.execve`, doubling initial process creation overhead.
+  3. *GSK GPU Scene Graph Initialization*: GTK4 initializes full 3D scene graphs and compiles OpenGL/Vulkan shaders upon window creation, adding ~350ms of GPU context negotiation.
+  4. *Subprocess Fork Overhead*: Running multiple synchronous CLI invocations (`wpctl`, `rfkill`, `bluetoothctl`, `swaync-client`) during UI initialization adds ~200ms of cumulative process fork latency.
+- **Resolution**:
+  1. Replace the interpreted Python/GTK4 control center overlay with a compiled native C binary ([`src/control-center/main.c`](file:///home/andres/yogabook-config/src/control-center/main.c)) linked against **GTK 3** and **`gtk-layer-shell`**.
+  2. Use direct Linux sysfs I/O (`/sys/class/backlight/...` and `/sys/class/power_supply/...`) for 0.1ms brightness and battery queries, eliminating external CLI forks.
+  3. Provide single-instance toggle semantics directly via PID checks and `SIGTERM`.
+  4. Decommission and remove the background systemd service (`yogabook-control-center.service`), saving ~100MB of resident RAM while achieving **~100ms** cold-start response time.
+  5. Implement periodic GLib live polling (`on_live_poll` via `g_timeout_add(250, ...)`) to synchronize brightness (ALS daemon), rotation posture, and audio volume dynamically while open. Ensure pending slider values (`pending_bright`, `pending_vol`) are explicitly initialized to `-1` (idle) so static C zero-initialization does not permanently block live update guards (`pending < 0`).
+  6. Preserve exact 1:1 RFKill semantics for hardware toggles (Bluetooth, Wi-Fi): query radio states directly via `rfkill list` (`Soft blocked: no`) rather than daemon queries (`bluetoothctl show`), ensuring quick toggles reliably control radio power states and update UI tiles even when underlying SoC controller drivers encounter kernel firmware negotiation delays.
+---
+
+## 35. Touch Activation Reliability & Zero-RAM App Drawer Architecture
+
+- **Date**: 2026-09-27
+- **Subsystem**: Desktop Shell / Application Drawer / Touch Input (`GTK3`, `GtkFlowBox`, `GtkScrolledWindow`, `gtk-layer-shell`)
+- **Symptoms**:
+  - Application launchers on touchscreen (e.g. `nwg-drawer` or standard GTK tree views) fail to launch applications on a single finger tap, requiring a clumsy double-tap or prolonged press.
+  - Keeping a Python/GTK or background drawer daemon alive to mask multi-second startup latency costs ~85MB of continuous resident RAM.
+- **Root Cause**:
+  1. *Kinetic Drag Threshold Absorption*: In `GtkScrolledWindow` containers, kinetic scrolling logic intercepts touch events (`GDK_TOUCH_BEGIN`, `GDK_TOUCH_UPDATE`). If finger contact shifts by even a few sub-pixels (natural touchscreen finger contact jitter), the container treats the interaction as a scroll drag gesture rather than a click/activation, dropping the activation event unless a rapid double-tap occurs.
+  2. *Daemon Dependency*: Interpreted app drawers (Python) or large C++ desktop suites take 1.5–3 seconds to cold-start due to icon theme parsing and `.desktop` file enumeration, forcing administrators to run background daemons (`yogabook-launcher.service`) that occupy precious RAM.
+- **Resolution**:
+  1. Implement a compiled native C application launcher ([`src/launcher/main.c`](file:///home/andres/yogabook-config/src/launcher/main.c)) built with GTK 3 and `gtk-layer-shell`.
+  2. Use `GtkFlowBox` with `gtk_flow_box_set_activate_on_single_click(flowbox, TRUE)` connected to the `child-activated` signal. `GtkFlowBox` reliably dispatches child activation on single touch release while gracefully tolerating touch contact jitter.
+  3. Pre-load `.desktop` entries and Papirus icons with `GAppInfo` during rapid native initialization (<60ms cold start).
+  4. Decommission `yogabook-launcher.service`, completely eliminating resident background RAM consumption (0 MB when closed).
+- **Prevention Pattern**:
+  For touch-first application launchers on Linux Wayland environments, avoid relying on standard button press events inside kinetic scroll windows. Use `GtkFlowBox` with explicit single-click activation (`activate-on-single-click=TRUE`) to guarantee reliable single-touch launching. Keep overlay launchers as native compiled C executables with zero background daemon overhead.
+
+---
+
+## 36. Notification Daemon Memory Bloat & D-Bus Well-Known Name Acquisition Race During Migration
+
+- **Date**: 2026-09-27
+- **Subsystem**: Notification Daemon / Desktop Shell / Memory Optimization (`Mako`, `SwayNC`, `D-Bus`, `Waybar`)
+- **Symptoms**:
+  - Complex notification center daemons (such as SwayNC built on GTK3/Vala with integrated audio volume monitors) consume 65MB to 116MB of continuous resident RAM 24/7 on an Atom-based device with only 4GB total RAM.
+  - Attempting to switch or enable an alternative notification daemon (such as `mako`) causes the new service to fail on startup:
+    ```text
+    mako: Failed to acquire service name: File exists
+    mako: Is a notification daemon already running?
+    systemd: mako.service: Failed with result 'exit-code'.
+    ```
+- **Root Cause**:
+  1. *Daemon Scope Bloat*: Monolithic notification centers combine pop-up notification rendering with pull-out drawer sidebars, PulseAudio volume listeners, and full GTK widget hierarchies, resulting in an order-of-magnitude larger memory and CPU footprint compared to a focused notification renderer.
+  2. *D-Bus Well-Known Name Contention*: Notification daemons claim the well-known session bus name `org.freedesktop.Notifications`. When migrating between daemons in a live session, background subscription scripts (such as `swaync-client -swb` invoked by Waybar) can keep the legacy daemon alive or continuously re-trigger it via D-Bus activation, preventing the new daemon from acquiring the bus name.
+- **Resolution**:
+  1. Terminate the legacy daemon and all persistent subscriber client processes (`killall -9 swaync swaync-client`), disable `swaync.service`, and reset systemd failure limits (`systemctl --user reset-failed mako.service`).
+  2. Deploy `mako` (a lightweight, C-based Wayland notification daemon) running as a supervised systemd user unit (`mako.service`).
+  3. Style `~/.config/mako/config` to match the Material Light / Adwaita theme (`background-color=#ffffffee`, `border-radius=16`, `outer-margin=46,12,0,0` to clear Waybar).
+  4. Implement Do Not Disturb (DND) mode via `[mode=dnd] invisible=1` while preserving critical battery/system notifications via `[mode=dnd urgency=critical] invisible=0`.
+  5. Provide a lightweight Waybar status provider ([`bin/yogabook-mako-status`](file:///home/andres/yogabook-config/bin/yogabook-mako-status)) and update the native C Control Center ([`src/control-center/main.c`](file:///home/andres/yogabook-config/src/control-center/main.c)) to query and toggle `makoctl mode -t dnd` with instant Waybar signal dispatch (`pkill -RTMIN+9 waybar`).
+  6. Memory consumption for the notification subsystem dropped from **~115MB to ~1.3MB** (a >98% reduction).
+- **Prevention Pattern**:
+  On memory-constrained systems (<=4GB RAM), prioritize single-responsibility notification dispatchers (`mako`) over multi-functional notification center suites. When migrating between services implementing identical D-Bus well-known names, systematically terminate client event streams before releasing the bus name to prevent activation deadlocks.
+
+---
+
+## 37. Interpreted Daemon Overhead & Full C-Native Migration for Resource-Constrained Hardware
+
+- **Date**: 2026-09-27
+- **Subsystem**: System Services / Hardware Daemons / Desktop Helpers (`yogabook-autorotate`, `yogabook-autobrightness`, `mango-workspace-watcher`, `sd-bus`, `libudev`, `ioctl(EVIOCGRAB)`)
+- **Symptoms**:
+  - Persistent Python 3 runtimes for hardware background services (`rot8.service`, `yogabook-autobrightness.service`, `mango-workspace-watcher.service`) continuously consume ~70MB–80MB of active resident RAM on an Intel Atom x5-Z8550 with only 4GB LPDDR3.
+  - Interactive touch buttons (Control Center, App Launcher, Close Window, Workspace buttons) incur 15–30ms fork/exec latency due to spawning `bash`, `pgrep`, `awk`, and `kill` processes on low-IPC CPU cores.
+- **Root Cause**:
+  1. *CPython Runtime Overhead*: Each running Python daemon incurs an unavoidable baseline of ~15–20MB RSS plus GC cycles, regardless of how light the actual task is (e.g. reading a sysfs ALS lux value or accelerometer vector).
+  2. *Process Fork Costs on Low-IPC Architectures*: Shell scripts executing pipelines (`pgrep`, `kill`, `awk`) require multiple kernel context switches and executable relocations, creating noticeable micro-stutter when triggered repeatedly from interactive Waybar widgets or touch gestures.
+- **Resolution**:
+  1. Migrate [`bin/yogabook-autorotate`](file:///home/andres/yogabook-config/bin/yogabook-autorotate) to native C ([`src/autorotate/main.c`](file:///home/andres/yogabook-config/src/autorotate/main.c)):
+     - Integrates `libudev` for dynamic screen vs keyboard sensor discovery.
+     - Direct `ioctl(fd, EVIOCGRAB, 1/0)` for Halo Keyboard suppression.
+     - Hardware SSE vector math for 2D hinge projection and singularity protection.
+     - Resident memory reduced from **15.4MB to 540KB** (0% CPU).
+  2. Migrate [`bin/yogabook-autobrightness`](file:///home/andres/yogabook-config/bin/yogabook-autobrightness) to native C ([`src/autobrightness/main.c`](file:///home/andres/yogabook-config/src/autobrightness/main.c)):
+     - Connects directly to `net.hadess.SensorProxy` via `libsystemd` (`sd-bus`) with zero Python/GIO overhead.
+     - Fluid 30ms stepped ramping and human perceptual LUT interpolation.
+     - Resident memory reduced from **17.8MB to 436KB**.
+  3. Migrate interactive helpers and watchers to compiled C binaries ([`src/helpers/`](file:///home/andres/yogabook-config/src/helpers/)):
+     - [`toggle-launcher`](file:///home/andres/yogabook-config/bin/toggle-launcher), [`toggle-control-center`](file:///home/andres/yogabook-config/bin/toggle-control-center), [`close-window`](file:///home/andres/yogabook-config/bin/close-window), [`ws-status`](file:///home/andres/yogabook-config/bin/ws-status), [`yogabook-mako-status`](file:///home/andres/yogabook-config/bin/yogabook-mako-status), [`toggle-keyboard`](file:///home/andres/yogabook-config/bin/toggle-keyboard), [`mango-workspace-watcher`](file:///home/andres/yogabook-config/bin/mango-workspace-watcher).
+     - Replaces Bash pipelines with instant (<0.5ms) direct system calls (`kill`, `execve`).
+  4. Provide a top-level repository [`Makefile`](file:///home/andres/yogabook-config/Makefile) and wire it into [`install.sh`](file:///home/andres/yogabook-config/install.sh) for single-command idempotent builds.
+  5. Overall background daemon RAM dropped from **~80MB to ~3.2MB** (>95% reduction).
+- **Prevention Pattern**:
+  On resource-constrained hardware (Intel Atom, ARM SBCs, <=4GB RAM), never run persistent Python processes for continuous sensor monitoring or background daemons. Implement resident services in single-threaded native C using lightweight platform primitives (`epoll`, `libudev`, `sd-bus`, `ioctl`) and compile transient CLI helpers to eliminate fork/exec shell overhead.
+
