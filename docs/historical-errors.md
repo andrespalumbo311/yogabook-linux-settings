@@ -897,3 +897,24 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On resource-constrained hardware (Intel Atom, ARM SBCs, <=4GB RAM), never run persistent Python processes for continuous sensor monitoring or background daemons. Implement resident services in single-threaded native C using lightweight platform primitives (`epoll`, `libudev`, `sd-bus`, `ioctl`) and compile transient CLI helpers to eliminate fork/exec shell overhead.
 
+---
+
+## 38. Accelerometer Hinge Singularity Asymmetry & Double-Debounce Race During Posture Transitions
+
+- **Date**: 2026-09-27
+- **Subsystem**: Posture Detection / Auto-Rotation Daemon / Accelerometer Sensor Fusion (`yogabook-autorotate`, `iio`, `libudev`, `wlr-randr`)
+- **Symptoms**:
+  - Spurious, erratic orientation changes immediately upon folding into tablet mode.
+  - While holding the device in portrait orientation in tablet mode, the daemon abruptly flips the display back to landscape (`270`), re-enables the Halo Keyboard, and exits tablet mode into laptop mode (~112° / 97° phantom opening angles logged).
+- **Root Cause**:
+  1. *Logical Asymmetry in 2D Singularity Guard*: When the 2-in-1 device is rotated into portrait mode, gravity aligns with the hinge axis ($Y$). Gravity in the perpendicular cross-section plane ($X-Z$) drops to near zero on both sensors. Evaluating `perp_s < 0.35 && perp_b < 0.35` allowed computation to proceed if a single sensor exceeded 0.35g due to slight tilt or hand jitter (e.g. `perp_s = 0.36, perp_b = 0.25`). Computing `atan2` on noisy near-zero vectors produced arbitrary phantom opening angles (e.g. 112°, 97°), fulfilling `opening <= 135°` and triggering false tablet-to-laptop reverts.
+  2. *Intra-Cycle Double Debounce Evaluation*: On the transition cycle confirming `current_mode = MODE_TABLET`, the daemon invoked `tracker_update(s)` during the mode transition block and then immediately evaluated continuous tracking `tracker_update(s)` in the very same loop cycle. This incremented `pending_count` twice in 0ms, completely bypassing the 2-cycle debounce filter and locking in transient folding angles.
+  3. *Uncalibrated Adaptive Polling*: Varying sleep interval between 1000ms and 300ms altered the physical debounce duration from 800ms down to 600ms, making orientation switching sensitive to dynamic swing accelerations while folding.
+- **Resolution**:
+  1. Enforce strict disjunction in the singularity guard: `if (perp_s < 0.35 || perp_b < 0.35)` ensures angle computation is aborted whenever *either* sensor lacks sufficient cross-sectional gravity.
+  2. Insert `continue;` upon confirming mode transition to ensure continuous orientation tracking resumes strictly on subsequent cycles, guaranteeing 1 increment per 400ms cycle.
+  3. Revert to a constant 400ms (`usleep(400000)`) loop, matching the calibrated Python reference.
+- **Prevention Pattern**:
+  In sensor-fusion algorithms calculating planar angles from two projected vectors, never compute angles if *either* vector magnitude falls below the noise floor (`mag_a < threshold || mag_b < threshold`). Furthermore, across state-machine mode transitions, never cascade multiple updates to downstream debounce filters within the same loop cycle; always yield the cycle to enforce deterministic time-based debouncing.
+
+

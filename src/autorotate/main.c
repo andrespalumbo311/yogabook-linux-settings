@@ -340,7 +340,7 @@ static DeviceMode get_posture(const int32_t s[3], const int32_t b[3], DeviceMode
     double perp_s = hypot(vs_x, vs_z) / ns;
     double perp_b = hypot(vb_x, vb_z) / nb;
 
-    if (perp_s < 0.35 && perp_b < 0.35) {
+    if (perp_s < 0.35 || perp_b < 0.35) {
         *out_opening = -1.0;
         return cur_mode;
     }
@@ -545,12 +545,8 @@ int main(void) {
         strcpy(last_hdmi_status, "disconnected");
     }
 
-    int32_t last_s[3] = {0}, last_b[3] = {0};
-    bool has_last_sample = false;
-    useconds_t sleep_interval = 400000;
-
     while (g_running) {
-        usleep(sleep_interval);
+        usleep(400000);
 
         // 1. HDMI Hotplug check
         char cur_hdmi[32] = {0};
@@ -574,23 +570,8 @@ int main(void) {
         // 2. Read accelerometer values
         if (!read_accel_raw(screen_dev, s) || !read_accel_raw(base_dev, b)) {
             find_iio_devices(screen_dev, sizeof(screen_dev), base_dev, sizeof(base_dev));
-            sleep_interval = 500000;
             continue;
         }
-
-        // Motion detection
-        bool is_moving = false;
-        if (has_last_sample) {
-            if (abs(s[0] - last_s[0]) > 40000 || abs(s[1] - last_s[1]) > 40000 || abs(s[2] - last_s[2]) > 40000 ||
-                abs(b[0] - last_b[0]) > 40000 || abs(b[1] - last_b[1]) > 40000 || abs(b[2] - last_b[2]) > 40000) {
-                is_moving = true;
-            }
-        } else {
-            is_moving = true;
-            has_last_sample = true;
-        }
-        last_s[0] = s[0]; last_s[1] = s[1]; last_s[2] = s[2];
-        last_b[0] = b[0]; last_b[1] = b[1]; last_b[2] = b[2];
 
         double opening = 0.0;
         DeviceMode detected_mode = get_posture(s, b, current_mode, false, &opening);
@@ -624,6 +605,8 @@ int main(void) {
                         (void)r;
                     }
                     mode_debounce_count = 0;
+                    mode_debounce_target = current_mode;
+                    continue; // Skip continuous tracking in transition cycle to maintain debounce timing
                 }
             } else {
                 mode_debounce_target = detected_mode;
@@ -641,13 +624,6 @@ int main(void) {
                 apply_transform(target_tr);
                 write_state(MODE_TABLET, target_tr);
             }
-        }
-
-        // Adaptive polling: 1000ms when resting stationary in laptop mode, 300ms when moving or in tablet mode
-        if (current_mode == MODE_LAPTOP && !is_moving) {
-            sleep_interval = 1000000; // 1.0s
-        } else {
-            sleep_interval = 300000;  // 0.3s
         }
     }
 

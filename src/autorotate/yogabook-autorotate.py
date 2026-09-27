@@ -332,7 +332,7 @@ def get_posture(s, b, cur_mode):
     # Singularity Guard: when gravity is almost purely along the hinge axis (Y),
     # perpendicular components vanish. Accelerometers cannot measure hinge opening.
     # Preserve current mode to prevent accidental flips when tilting/lifting the laptop!
-    if perp_s < 0.35 and perp_b < 0.35:
+    if perp_s < 0.35 or perp_b < 0.35:
         return (cur_mode if cur_mode is not None else "tablet"), -1.0
 
     # True 2D opening angle in cross-section plane
@@ -559,6 +559,7 @@ def main():
 
                         mode_debounce_target = None
                         mode_debounce_count = 0
+                        continue
                 else:
                     mode_debounce_target = detected_mode
                     mode_debounce_count = 1
