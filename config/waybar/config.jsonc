@@ -121,7 +121,7 @@
         },
         "return-type": "json",
         "exec": "/home/andres/.local/bin/yogabook-mako-status",
-        "interval": 2,
+        "interval": 30,
         "signal": 9,
         "on-click": "/home/andres/.local/bin/toggle-control-center",
         "on-click-right": "makoctl mode -t dnd && pkill -RTMIN+9 waybar",
