@@ -943,4 +943,26 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   In virtual on-screen keyboards for Wayland compositors, never bind graphic symbols to modifier combinations (`AltGr + Key` or `Shift + Key`) that depend on the active system keyboard variant. For graphic symbols, currency markers, and diacritics, always emit unambiguous Unicode codepoints directly via virtual keyboard keymap templates to guarantee layout-invariant character emission.
 
+---
+
+## 40. Asynchronous D-Bus Socket Truncation on Premature Process Termination in App Launchers
+
+- **Date**: 2026-09-28
+- **Subsystem**: Application Launchers / D-Bus Activation / GLib GIO (`yogabook-launcher`, `GDesktopAppInfo`, `pamac`, `Nautilus`, `libgio`)
+- **Symptoms**:
+  - Applications specifying `DBusActivatable=true` in their desktop files (such as Pamac / App Store, Nautilus, or GNOME Text Editor) fail silently to launch when selected in a custom native C launcher.
+  - No error dialog is raised, no process is spawned, and fallback launch commands (`g_spawn_command_line_async`) never trigger because `g_app_info_launch()` returns `TRUE`.
+  - Non-D-Bus applications (e.g. Foot, Brave, VLC) launched from the exact same launcher start without issue.
+  - Searching for common synonyms or terms (e.g. "store", "app", "pamac") in the launcher search bar fails to filter or find the application if its translated desktop name differs (e.g. "Add/Remove Software" or "Aggiungi/Rimuovi software").
+- **Root Cause**:
+  1. *Asynchronous IPC Truncation*: `g_app_info_launch()` delegates D-Bus activatable applications via `org.freedesktop.Application.Activate` over the session bus asynchronously. Because it queues the message on the GIO connection loop and returns `TRUE` immediately, executing `gtk_main_quit()` and terminating the launcher process immediately closes the UNIX domain socket to `dbus-daemon` before the buffer can be flushed and transmitted to the kernel.
+  2. *Single-Field Search Limitation*: The launcher search callback compared the input query only against `app_name` (`g_app_info_get_display_name()`), completely omitting `.desktop` metadata (`Keywords`, `Comment`, `Exec`, and desktop file ID).
+- **Resolution**:
+  1. In `src/launcher/main.c`, obtain the session bus connection via `g_bus_get_sync()` and invoke `g_dbus_connection_flush_sync()` immediately following `g_app_info_launch()` before invoking `gtk_main_quit()`.
+  2. Implement `build_search_text()` to compile a lowercase aggregated search index comprising display name, comment/description, executable name, desktop ID, and all declared desktop keywords (`g_desktop_app_info_get_keywords()`).
+  3. Recompile and install the binary via `make -C src/launcher`.
+- **Prevention Pattern**:
+  In ephemeral or short-lived launcher processes dispatching actions via asynchronous IPC or D-Bus (such as GLib GIO `GAppInfo` or systemd `sd-bus`), never terminate the process or event loop immediately following an IPC invocation without explicitly flushing the connection (`g_dbus_connection_flush_sync` / `sd_bus_flush`). Furthermore, application launchers must index desktop keywords and descriptions rather than relying solely on display names.
+
+
 

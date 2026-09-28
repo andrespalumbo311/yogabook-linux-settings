@@ -2,6 +2,7 @@
 #include <gtk/gtk.h>
 #include <gtk-layer-shell/gtk-layer-shell.h>
 #include <gio/gio.h>
+#include <gio/gdesktopappinfo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,43 @@ static char* str_tolower(const char *src) {
     return res;
 }
 
+static char* build_search_text(GAppInfo *app_info, const char *display_name) {
+    GString *s = g_string_new(display_name);
+    g_string_append_c(s, ' ');
+
+    const char *desc = g_app_info_get_description(app_info);
+    if (desc) {
+        g_string_append(s, desc);
+        g_string_append_c(s, ' ');
+    }
+
+    const char *exe = g_app_info_get_executable(app_info);
+    if (exe) {
+        g_string_append(s, exe);
+        g_string_append_c(s, ' ');
+    }
+
+    const char *id = g_app_info_get_id(app_info);
+    if (id) {
+        g_string_append(s, id);
+        g_string_append_c(s, ' ');
+    }
+
+    if (G_IS_DESKTOP_APP_INFO(app_info)) {
+        const char * const *kw = g_desktop_app_info_get_keywords(G_DESKTOP_APP_INFO(app_info));
+        if (kw) {
+            for (int i = 0; kw[i]; i++) {
+                g_string_append(s, kw[i]);
+                g_string_append_c(s, ' ');
+            }
+        }
+    }
+
+    char *lower = str_tolower(s->str);
+    g_string_free(s, TRUE);
+    return lower;
+}
+
 static void launch_app(GAppInfo *app_info) {
     if (!app_info) return;
 
@@ -110,6 +148,14 @@ static void launch_app(GAppInfo *app_info) {
         }
         if (err) g_error_free(err);
     }
+
+    // Flush pending D-Bus activation messages (crucial for DBusActivatable applications like Pamac/Nautilus)
+    GDBusConnection *conn = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (conn) {
+        g_dbus_connection_flush_sync(conn, NULL, NULL);
+        g_object_unref(conn);
+    }
+
     g_object_unref(ctx);
 
     cleanup_pidfile();
@@ -134,15 +180,13 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     GList *children = gtk_container_get_children(GTK_CONTAINER(g_launcher.flowbox));
     for (GList *l = children; l != NULL; l = l->next) {
         GtkWidget *child = GTK_WIDGET(l->data);
-        const char *name = (const char *)g_object_get_data(G_OBJECT(child), "app_name");
-        if (name) {
-            char *low_name = str_tolower(name);
-            if (strlen(query) == 0 || strstr(low_name, query) != NULL) {
+        const char *search_text = (const char *)g_object_get_data(G_OBJECT(child), "search_text");
+        if (search_text) {
+            if (strlen(query) == 0 || strstr(search_text, query) != NULL) {
                 gtk_widget_show(child);
             } else {
                 gtk_widget_hide(child);
             }
-            free(low_name);
         }
     }
     g_list_free(children);
@@ -251,6 +295,8 @@ static void load_applications(LauncherApp *app) {
 
         g_object_set_data_full(G_OBJECT(child), "app_info", app_info, g_object_unref);
         g_object_set_data_full(G_OBJECT(child), "app_name", strdup(name), free);
+        char *search_text = build_search_text(app_info, name);
+        g_object_set_data_full(G_OBJECT(child), "search_text", search_text, free);
 
         gtk_container_add(GTK_CONTAINER(app->flowbox), child);
     }
