@@ -917,4 +917,30 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   In sensor-fusion algorithms calculating planar angles from two projected vectors, never compute angles if *either* vector magnitude falls below the noise floor (`mag_a < threshold || mag_b < threshold`). Furthermore, across state-machine mode transitions, never cascade multiple updates to downstream debounce filters within the same loop cycle; always yield the cycle to enforce deterministic time-based debouncing.
 
+---
+
+## 39. Mobile Keymap Ambiguities, Missing Symbols & AltGr Composition Clashes in Minimalist Virtual Keyboards (`wvkbd`)
+
+- **Date**: 2026-09-28
+- **Subsystem**: Virtual Touch Keyboard / Input Method / XKB Symbols (`wvkbd`, `zwp_virtual_keyboard_v1`, `MangoWC`, `us(intl)`)
+- **Symptoms**:
+  - Tapping the symbols/graphic layer (`⌨͕` / `special`) on the on-screen keyboard failed to present essential symbols (such as `@`, `#`, `€`, `?`, `!`, `{`, `}`, `_`, `+`, `~`); instead, it repeated digits `1–0` and required activating Shift inside the symbols layer.
+  - Key symbols such as `<` and `>` emitted wrong glyphs (e.g. `ç` instead of `<`).
+  - European currency symbols (`€`), ordinal/degree signs (`°`), section signs (`§`), and accented vowels (`à`, `è`, `é`, `ì`, `ò`, `ù`) were either completely missing or locked behind non-standard, tedious compose key sequences (`Cmp + e`).
+- **Root Cause**:
+  1. *Sub-optimal Layer Architecture*: The upstream mobile layout (`mobintl`) assigned navigation arrow keys across the entire first row and digits across the second row of the special layer. Common symbols (`@#$%^&*()`) were configured strictly as shifted keycodes on digits rather than direct single-tap keys.
+  2. *AltGr Mapping Collisions in International Layouts*: Upstream `wvkbd` bound `<` and `>` to `Code, KEY_COMMA, 0, AltGr` and `Code, KEY_DOT, 0, AltGr`. On desktop compositors configured with `us(intl)` (used to enable physical keyboard dead keys), `AltGr + KEY_COMMA` resolves to `ç` in XKB, completely corrupting the `<` comparison symbol.
+  3. *Missing European Glyph Definitions*: No keysym or Unicode mapping for `€` (Euro), `°` (Degree), or `§` (Section) existed in upstream `layout.mobintl.h`.
+- **Resolution**:
+  1. Vendor the `wvkbd` source tree into the repository ([`src/wvkbd/`](file:///home/andres/yogabook-config/src/wvkbd/)) and integrate it into the top-level [`Makefile`](file:///home/andres/yogabook-config/Makefile).
+  2. Implement a dedicated, 5-row responsive touch layout ([`layout.yogabook.h`](file:///home/andres/yogabook-config/src/wvkbd/layout.yogabook.h)):
+     - **Full (QWERTY)**: Symmetrical 5-row layout with top digits row and direct layer shortcuts (`?123`, `àèì`).
+     - **Special (`?123`)**: Direct, single-tap access to all common symbols (`@`, `#`, `€`, `$`, `%`, `&`, `*`, `-`, `+`, `=`, `(`, `)`, `/`, `\`, `"`, `'`, `:`, `;`, `!`, `?`, `[`, `]`, `{`, `}`, `< `, `>`, `_`, `~`, `|`) without requiring Shift.
+     - **Special2 (`=\<`)**: Extended typography, currencies, and math (`°`, `§`, `£`, `¥`, `^`, `` ` ``, `±`, `×`, `÷`, `≠`, `«`, `»`, `•`, `…`, `©`, `®`, `™`, arrows, and navigation controls).
+     - **Accents (`àèì`)**: Immediate access to Italian and European accented vowels (`à`, `è`, `é`, `ì`, `ò`, `ù`, `ç`, `À`, `È`, `É`, `Ì`, `Ò`, `Ù`, `Ç`).
+  3. Decouple non-standard symbols and comparison operators from fragile XKB modifier combinations by emitting direct Unicode codepoints via `Copy` (`0x003C` for `<`, `0x003E` for `>`, `0x20AC` for `€`, `0x00B0` for `°`, etc.).
+  4. Update [`wvkbd.service`](file:///home/andres/yogabook-config/config/systemd/user/wvkbd.service) with `-l full,special,special2,accents,emoji` and an optimized landscape height of 240px.
+- **Prevention Pattern**:
+  In virtual on-screen keyboards for Wayland compositors, never bind graphic symbols to modifier combinations (`AltGr + Key` or `Shift + Key`) that depend on the active system keyboard variant. For graphic symbols, currency markers, and diacritics, always emit unambiguous Unicode codepoints directly via virtual keyboard keymap templates to guarantee layout-invariant character emission.
+
 

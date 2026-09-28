@@ -43,7 +43,7 @@ yogabook-config/
 │   ├── close-window               # Safe IPC window close binary for MangoWC (Native C)
 │   ├── ws-status                  # Dynamic workspace status provider for Waybar (Native C)
 │   ├── mango-workspace-watcher    # MangoWC event watcher daemon for Waybar (Native C)
-│   └── wvkbd                      # wvkbd-mobintl binary (compiled for minimal footprint)
+│   └── wvkbd                      # Native C Touch Virtual Keyboard (custom Yoga Book layout, 1.1 MB RAM)
 │
 ├── src/                           # Native C source trees
 │   ├── Makefile                   # Recursive build manager for all submodules
@@ -51,7 +51,8 @@ yogabook-config/
 │   ├── launcher/                  # Native C Application Launcher source and Makefile
 │   ├── autorotate/                # Native C Smart Auto-Rotation source and Makefile
 │   ├── autobrightness/            # Native C Smart Auto-Brightness source and Makefile
-│   └── helpers/                   # Native C micro-helpers and watchers source and Makefile
+│   ├── helpers/                   # Native C micro-helpers and watchers source and Makefile
+│   └── wvkbd/                     # Native C Virtual Keyboard source, custom layout and Makefile
 ├── config/                        # User dotfiles (symlinked to ~/.config/)
 │   ├── mango/
 │   │   ├── config.conf            # MangoWC compositor config (GPU/CPU optimized, Wacom mapping)

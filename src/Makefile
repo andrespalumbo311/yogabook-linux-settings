@@ -1,4 +1,4 @@
-SUBDIRS = control-center launcher autorotate autobrightness helpers
+SUBDIRS = control-center launcher autorotate autobrightness helpers wvkbd
 
 all:
 	@for dir in $(SUBDIRS); do \

@@ -6,7 +6,7 @@ After=mango-session.target
 [Service]
 Type=simple
 Environment=WAYLAND_DISPLAY=wayland-0
-ExecStart=/home/andres/.local/bin/wvkbd --hidden -l full,special,emoji --bg 1e1e2eff --fg 313244ff --fg-sp 45475aff --text cdd6f4ff --press 89b4faff -R 10 -H 340 -L 220
+ExecStart=/home/andres/.local/bin/wvkbd --hidden -l full,special,special2,accents,emoji --landscape-layers full,special,special2,accents,emoji --bg 1e1e2eff --fg 313244ff --fg-sp 45475aff --text cdd6f4ff --press 89b4faff -R 10 -H 340 -L 240
 Restart=always
 RestartSec=2
 
