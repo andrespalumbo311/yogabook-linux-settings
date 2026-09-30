@@ -167,6 +167,10 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/conf.d/wireless-regdom" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/conf.d/wireless-regdom" /etc/conf.d/wireless-regdom
     fi
+    if [ -f "$REPO_DIR/system/firmware/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/firmware/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt" "/usr/lib/firmware/brcm/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt"
+        sudo ln -sf "brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt" "/usr/lib/firmware/brcm/brcmfmac4356-pcie.txt"
+    fi
     sudo udevadm control --reload-rules && sudo udevadm trigger /dev/input/event* || true
     if [ -f "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/polkit-1/rules.d/49-yogabook-keyboard.rules" /etc/polkit-1/rules.d/49-yogabook-keyboard.rules

@@ -1009,3 +1009,34 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On Intel Cherry Trail / Bay Trail SoCs with PCIe wireless adapters, always disable PCIe Active State Power Management (`pcie_aspm=off`) to prevent unhandled PCIe link sleep stalls from freezing the internal SoC fabric. In wireless management interfaces, never issue hardware power-cuts (`rfkill`) concurrently with network scans, and ensure manual network disconnections prevent immediate supplicant autoconnect churn.
 
+---
+
+## 43. Broadcom BCM4356 PCIe DMI NVRAM Naming Discrepancy & Missing `macaddr` Firmware Trap
+
+- **Date**: 2026-09-30
+- **Subsystem**: Wireless Drivers / Kernel Firmware Loading / FullMAC Calibration (`brcmfmac`, `linux-firmware`, `efivars`)
+- **Symptoms**:
+  - The Yoga Book YB1-X91F fails to discover or associate with 5 GHz Wi-Fi networks even when placed directly beside the access point.
+  - Radio scans only discover 2.4 GHz channels (`2412`, `2437`, `2452`), completely omitting 5 GHz bands despite `Band 2` being declared by `iw phy`.
+  - Kernel logs report missing DMI text configuration at boot:
+    ```text
+    brcmfmac 0000:01:00.0: Direct firmware load for brcm/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt failed with error -2
+    brcmfmac 0000:01:00.0: Direct firmware load for brcm/brcmfmac4356-pcie.txt failed with error -2
+    brcmfmac: brcmf_fw_nvram_from_efi: Using nvram EFI variable
+    ```
+  - If a vendor NVRAM text file omitting `macaddr` is provided, the firmware crashes on initialization:
+    ```text
+    ieee80211 phy0: brcmf_c_preinit_dcmds: Retrieving cur_etheraddr failed, -5
+    ieee80211 phy0: brcmf_attach: dongle is not responding: err=-5
+    ieee80211 phy0: brcmf_fw_crashed: Firmware has halted or crashed
+    ```
+- **Root Cause**:
+  1. *DMI Name Divergence*: Linaro created and upstreamed the official RF NVRAM tuning file for the Yoga Book convertible mainboard (`brcmfmac4356-pcie.Intel Corporation-CHERRYVIEW D1 PLATFORM.txt.zst`) targeting the Android model (X90F / X90L). The Windows model (YB1-X91F) exposes the DMI string `LENOVO-Lenovo YB1-X91F`. Because the driver cannot find `brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt`, it falls back to the generic uncalibrated BIOS EFI NVRAM variable (`ccode=US`, 12 dB lower 5 GHz RF power limit, uncalibrated LNA/switch maps).
+  2. *Missing OTP MAC Address*: The Broadcom BCM4356 PCIe silicon on the Yoga Book does not contain an on-chip OTP MAC address; the firmware requires `macaddr` to be injected via NVRAM. When omitted, `cur_etheraddr` times out with `-5` (`-EIO`) and triggers a fatal firmware trap.
+- **Resolution**:
+  1. Vendor the Linaro NVRAM configuration into [`system/firmware/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt`](file:///home/andres/yogabook-config/system/firmware/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt) with `ccode=X2`, +12 dB power headroom (`maxp5ga0=80`), optimized 5 GHz LNA calibrations, and the device's factory MAC address.
+  2. Install the file to `/usr/lib/firmware/brcm/brcmfmac4356-pcie.LENOVO-Lenovo YB1-X91F.txt` and provide a fallback symlink `brcmfmac4356-pcie.txt`.
+  3. Bind the device via sysfs (`echo "0000:01:00.0" > /sys/bus/pci/drivers/brcmfmac/bind`) to cleanly probe and initialize the firmware without triggering PCIe bus stalls.
+- **Prevention Pattern**:
+  On Broadcom FullMAC PCIe wireless devices (`brcmfmac`), always verify the exact DMI board string expected by the kernel driver when matching vendor NVRAM tuning files. Furthermore, never omit the `macaddr` property in standalone NVRAM text configurations unless verified that the target hardware variant embeds a hardware OTP MAC address.
+
