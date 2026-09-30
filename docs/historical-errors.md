@@ -178,10 +178,9 @@ This document records architectural, packaging, and runtime issues encountered o
   2. *Uninstalled Protocol Stack*: `bluez` and `bluez-utils` were not installed on the minimal installation.
 - **Resolution**:
   1. Install `broadcom-bt-firmware-git`, `bluez`, and `bluez-utils`.
-  2. Create a canonical symlink `/usr/lib/firmware/brcm/BCM4356A2.hcd -> BCM4356A2-0a5c-640e.hcd`.
+  2. *(Deprecated/Corrected)*: Avoid symlinking `BCM4356A2-0a5c-640e.hcd` (it is a USB-only patchram that bricks UART communication; see Section 44). The chip operates natively from ROM at 115200 baud.
   3. Enable `bluetooth.service` for system D-Bus activation.
-  4. Create and enable `bluetooth-default-off.service` (`rfkill block bluetooth` at multi-user boot) to enforce zero standby battery drain on boot.
-  5. In `yogabook-control-center`, connect the Bluetooth quick toggle to both `rfkill` unblock/block and `bluetoothctl power on/off`.
+  4. In `yogabook-control-center`, connect the Bluetooth quick toggle to both `rfkill` unblock/block and `bluetoothctl power on/off`.
 - **Prevention Pattern**:
   On SoC platforms with UART/serdev Broadcom Bluetooth, always verify whether the kernel driver expects a generic `.hcd` alias rather than vendor-tagged firmware filenames. Ensure default-off power management services do not cut radio power concurrently during active driver baudrate negotiation.
 
@@ -1039,4 +1038,33 @@ This document records architectural, packaging, and runtime issues encountered o
   3. Bind the device via sysfs (`echo "0000:01:00.0" > /sys/bus/pci/drivers/brcmfmac/bind`) to cleanly probe and initialize the firmware without triggering PCIe bus stalls.
 - **Prevention Pattern**:
   On Broadcom FullMAC PCIe wireless devices (`brcmfmac`), always verify the exact DMI board string expected by the kernel driver when matching vendor NVRAM tuning files. Furthermore, never omit the `macaddr` property in standalone NVRAM text configurations unless verified that the target hardware variant embeds a hardware OTP MAC address.
+
+---
+
+## 44. Broadcom UART ACPI Serdev Bluetooth Bricking via Incompatible USB Patchram & Boot Log Suppression
+
+- **Date**: 2026-09-30
+- **Subsystem**: Bluetooth Subsystem / Broadcom Serdev Driver / Firmware Loading (`hci_bcm`, `btbcm`, `bluez`)
+- **Symptoms**:
+  - `bluetoothctl` reports `No default controller available`. `btmgmt info` reports `Index list with 0 items`.
+  - Kernel logs report repeated timeouts during initialization:
+    ```text
+    Bluetooth: hci0: command 0xfc45 tx timeout
+    Bluetooth: hci0: BCM: failed to write clock (-110)
+    Bluetooth: hci0: command 0xfc45 tx timeout
+    Bluetooth: hci0: BCM: Reset failed (-110)
+    ```
+  - The controller fails to initialize and completely disappears from userspace.
+- **Root Cause**:
+  1. *Incompatible USB Firmware Patchram on UART Serdev Chip*: The Yoga Book embeds a Broadcom BCM4356A2 combo chip connected via ACPI UART (`serial0-0` / `BCM2E8A:00`). The generic `broadcom-bt-firmware-git` package only distributes `.hcd` files created for USB Bluetooth dongles/cards (e.g. `BCM4356A2-0a5c-640e.hcd`, containing `BCM4354A2 USB 37.4 MHz`). Historical Error #9 erroneously created a symlink `/usr/lib/firmware/brcm/BCM4356A2.hcd -> BCM4356A2-0a5c-640e.hcd`.
+  2. *UART Communication Lockup & Opcode 0xfc45 Timeout*: When the kernel driver (`btbcm_patchram`) uploaded this USB patchram into chip RAM, the chip firmware switched its internal protocol handling away from UART. When `bcm_setup` subsequently attempted to configure high baud rates (4,000,000 bps) by sending Broadcom vendor command `0xfc45` (set UART clock to 48MHz), the controller no longer acknowledged UART commands, timing out with `-110` (`ETIMEDOUT`) and causing `bcm_setup` to abort with error.
+  3. *Premature Bug Masking*: In Historical Error #24, these boot timeout messages were misinterpreted as a race condition with `rfkill`, and suppressed by adding `quiet loglevel=3` and `kernel.printk = 3 4 1 3`, hiding the failure while leaving Bluetooth completely dead.
+- **Resolution**:
+  1. Remove the incompatible USB patchram symlink `/usr/lib/firmware/brcm/BCM4356A2.hcd`.
+  2. Rebind the serial device (`echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/unbind && echo serial0-0 > /sys/bus/serial/drivers/hci_uart_bcm/bind`) or reboot.
+  3. Without the incompatible USB patch, `btbcm_initialize` cleanly falls back to the chip's internal factory ROM firmware at 115200 baud, completes `bcm_setup` with return code 0, registers `hci0`, and initializes the BlueZ management interface.
+  4. Bluetooth pairing, trusting, audio playback (A2DP / AVRCP), PAN tethering, and peripheral connections function cleanly.
+- **Prevention Pattern**:
+  Never symlink or force Bluetooth patchram (`.hcd`) firmware files without verifying whether the target hardware bus is USB or UART/serdev. Patchram binaries targeting USB endpoints will disrupt UART transport on serdev SoC controllers. Furthermore, never treat persistent driver command timeouts (`tx timeout`, `-110`) as transient race conditions or suppress them with loglevel filters without actively verifying device operational readiness (`bluetoothctl show`) in userspace.
+
 
