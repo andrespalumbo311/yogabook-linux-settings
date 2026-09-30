@@ -566,21 +566,51 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.add(page)
 
         # Initial radio state
+        self._wifi_init = True
+        self._active_ssid = None
+        self._is_scanning = False
         try:
-            res = subprocess.run(["rfkill", "list", "wifi"], capture_output=True, text=True, check=False)
-            is_blocked = "Soft blocked: yes" in res.stdout
+            is_blocked = self._is_wifi_blocked()
             self.switch_wifi.set_active(not is_blocked)
         except Exception:
             self.switch_wifi.set_active(True)
+        self._wifi_init = False
+
+    def _is_wifi_blocked(self):
+        try:
+            res = subprocess.run(["rfkill", "list", "wifi"], capture_output=True, text=True, check=False)
+            return "Soft blocked: yes" in res.stdout or "Hard blocked: yes" in res.stdout
+        except Exception:
+            return False
 
     def _on_wifi_toggled(self, switch, param):
+        if getattr(self, "_wifi_init", False):
+            return
         active = switch.get_active()
         cmd = ["rfkill", "unblock", "wifi"] if active else ["rfkill", "block", "wifi"]
         subprocess.run(cmd, check=False)
-        GLib.timeout_add(1000, self._refresh_active_wifi)
-        GLib.timeout_add(1500, self._populate_available_networks)
+        if not active:
+            self._active_ssid = None
+            self.row_active_wifi.set_title("Wi-Fi disattivato")
+            self.row_active_wifi.set_subtitle("Modulo radio wireless spento (rfkill).")
+            self.lbl_wifi_detail.set_markup("<span foreground='#868686'>Spento</span>")
+            if hasattr(self, "btn_active_disconnect"):
+                self.btn_active_disconnect.set_visible(False)
+            if hasattr(self, "btn_scan_wifi"):
+                self.btn_scan_wifi.set_sensitive(False)
+            self._render_networks_list([])
+        else:
+            if hasattr(self, "btn_scan_wifi"):
+                self.btn_scan_wifi.set_sensitive(False)
+            self.row_active_wifi.set_title("Attivazione Wi-Fi...")
+            self.row_active_wifi.set_subtitle("Inizializzazione controller radio Broadcom...")
+            self.lbl_wifi_detail.set_markup("<span foreground='#f5c211'>Avvio...</span>")
+            GLib.timeout_add(2500, self._refresh_active_wifi)
+            GLib.timeout_add(3000, self._populate_available_networks)
 
     def _refresh_active_wifi(self):
+        if not self.switch_wifi.get_active() or self._is_wifi_blocked():
+            return
         def _worker():
             try:
                 res = subprocess.run(["iwctl", "station", "wlan0", "show"], capture_output=True, text=True, check=False)
@@ -609,7 +639,12 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _update_active_wifi_ui(self, ssid, ip, rssi, freq, sec, state):
+        if not self.switch_wifi.get_active() or self._is_wifi_blocked():
+            self._active_ssid = None
+            return
+
         if ssid != "Non connesso" and state in ("connected", "connecting"):
+            self._active_ssid = ssid
             self.row_active_wifi.set_title(f"Connesso a: {safe_markup(ssid)}")
             sub_parts = []
             if ip != "--":
@@ -625,6 +660,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             if hasattr(self, "btn_active_disconnect"):
                 self.btn_active_disconnect.set_visible(True)
         else:
+            self._active_ssid = None
             self.row_active_wifi.set_title("Nessuna rete connessa")
             self.row_active_wifi.set_subtitle("Abilita il Wi-Fi o seleziona una rete dall'elenco sottostante.")
             self.lbl_wifi_detail.set_markup("<span foreground='#868686'>Disconnesso</span>")
@@ -632,20 +668,35 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 self.btn_active_disconnect.set_visible(False)
 
     def _scan_wifi(self):
+        if not self.switch_wifi.get_active() or self._is_wifi_blocked():
+            return
+        if getattr(self, "_is_scanning", False):
+            return
+        self._is_scanning = True
         if hasattr(self, "btn_scan_wifi"):
             self.btn_scan_wifi.set_sensitive(False)
 
         def _worker():
-            subprocess.run(["iwctl", "station", "wlan0", "scan"], check=False)
-            time.sleep(1.5)
-            self._fetch_networks_and_known()
+            try:
+                subprocess.run(["iwctl", "station", "wlan0", "scan"], check=False)
+                time.sleep(2.0)
+                self._fetch_networks_and_known()
+            finally:
+                self._is_scanning = False
+                GLib.idle_add(lambda: self.btn_scan_wifi.set_sensitive(True) if hasattr(self, "btn_scan_wifi") and self.switch_wifi.get_active() and not self._is_wifi_blocked() else None)
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _populate_available_networks(self):
+        if not self.switch_wifi.get_active() or self._is_wifi_blocked():
+            GLib.idle_add(self._render_networks_list, [])
+            return
         threading.Thread(target=self._fetch_networks_and_known, daemon=True).start()
 
     def _fetch_networks_and_known(self):
+        if not self.switch_wifi.get_active() or self._is_wifi_blocked():
+            GLib.idle_add(self._render_networks_list, [])
+            return
         try:
             # 1. Get known networks
             res_known = subprocess.run(["iwctl", "known-networks", "list"], capture_output=True, text=True, check=False)
@@ -705,12 +756,21 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             GLib.idle_add(self._render_networks_list, [])
 
     def _render_networks_list(self, networks):
+        is_active = self.switch_wifi.get_active() and not self._is_wifi_blocked()
         if hasattr(self, "btn_scan_wifi"):
-            self.btn_scan_wifi.set_sensitive(True)
+            self.btn_scan_wifi.set_sensitive(is_active)
 
         for row in self.network_rows:
             self.group_networks.remove(row)
         self.network_rows.clear()
+
+        if not is_active:
+            row = Adw.ActionRow()
+            row.set_title("Modulo Wi-Fi disattivato")
+            row.set_subtitle("Attiva l'interruttore in alto per cercare e connetterti alle reti disponibili.")
+            self.group_networks.add(row)
+            self.network_rows.append(row)
+            return
 
         if not networks:
             row = Adw.ActionRow()
@@ -829,6 +889,8 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
         def _worker():
             try:
+                # Ensure AutoConnect is enabled for this network when user manually connects
+                subprocess.run(["iwctl", "known-networks", ssid, "set-property", "AutoConnect", "yes"], check=False)
                 cmd = ["iwctl", "--dont-ask"]
                 if password:
                     cmd.extend(["--passphrase", password])
@@ -865,10 +927,19 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             self.add_toast(Adw.Toast.new(f"Errore connessione a '{ssid}': {err_msg}"))
 
     def _disconnect_wifi(self):
+        if hasattr(self, "btn_active_disconnect"):
+            self.btn_active_disconnect.set_sensitive(False)
+
         def _worker():
+            # If currently connected to a known SSID, disable AutoConnect temporarily so iwd doesn't immediately reconnect
+            current_ssid = getattr(self, "_active_ssid", None)
+            if current_ssid:
+                subprocess.run(["iwctl", "known-networks", current_ssid, "set-property", "AutoConnect", "no"], check=False)
             subprocess.run(["iwctl", "station", "wlan0", "disconnect"], check=False)
             time.sleep(1.0)
             def _ui():
+                if hasattr(self, "btn_active_disconnect"):
+                    self.btn_active_disconnect.set_sensitive(True)
                 self.add_toast(Adw.Toast.new("Rete Wi-Fi disconnessa"))
                 self._refresh_active_wifi()
                 self._populate_available_networks()

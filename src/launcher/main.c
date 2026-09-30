@@ -59,6 +59,13 @@ static const char *CSS_DATA =
 ".app-tile {\n"
 "    min-width: 96px;\n"
 "}\n"
+".app-btn {\n"
+"    background: transparent;\n"
+"    border: none;\n"
+"    box-shadow: none;\n"
+"    padding: 0;\n"
+"    margin: 0;\n"
+"}\n"
 ".app-label {\n"
 "    font-size: 12px;\n"
 "    font-weight: 600;\n"
@@ -132,8 +139,11 @@ static char* build_search_text(GAppInfo *app_info, const char *display_name) {
     return lower;
 }
 
+static gboolean g_app_launched = FALSE;
+
 static void launch_app(GAppInfo *app_info) {
-    if (!app_info) return;
+    if (!app_info || g_app_launched) return;
+    g_app_launched = TRUE;
 
     GdkDisplay *disp = gdk_display_get_default();
     GdkAppLaunchContext *ctx = gdk_display_get_app_launch_context(disp);
@@ -166,6 +176,14 @@ static void on_child_activated(GtkFlowBox *box, GtkFlowBoxChild *child, gpointer
     (void)box;
     (void)user_data;
     GAppInfo *app_info = (GAppInfo *)g_object_get_data(G_OBJECT(child), "app_info");
+    if (app_info) {
+        launch_app(app_info);
+    }
+}
+
+static void on_app_button_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    GAppInfo *app_info = (GAppInfo *)user_data;
     if (app_info) {
         launch_app(app_info);
     }
@@ -214,13 +232,31 @@ static void on_search_activate(GtkEntry *entry, gpointer user_data) {
 static gboolean on_window_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data) {
     (void)widget;
     LauncherApp *app = (LauncherApp *)user_data;
+
+    // 1. Direct widget hierarchy check: is the event inside the card or its children?
+    GtkWidget *target = gtk_get_event_widget((GdkEvent *)event);
+    if (target && (target == app->card || gtk_widget_is_ancestor(target, app->card))) {
+        return FALSE; // Inside card -> let child widgets handle click
+    }
+
+    // 2. Secondary check: translate subwindow coordinates to toplevel window coordinates
+    gdouble wx = event->x, wy = event->y;
+    GdkWindow *w = event->window;
+    GdkWindow *toplevel = gtk_widget_get_window(app->window);
+    while (w != NULL && w != toplevel) {
+        gdouble px, py;
+        gdk_window_coords_to_parent(w, wx, wy, &px, &py);
+        wx = px;
+        wy = py;
+        w = gdk_window_get_effective_parent(w);
+    }
     GtkAllocation alloc;
     gtk_widget_get_allocation(app->card, &alloc);
-
-    if (event->x >= alloc.x && event->x <= alloc.x + alloc.width &&
-        event->y >= alloc.y && event->y <= alloc.y + alloc.height) {
-        return FALSE; // Inside card
+    if (wx >= alloc.x && wx <= alloc.x + alloc.width &&
+        wy >= alloc.y && wy <= alloc.y + alloc.height) {
+        return FALSE; // Inside card bounding box
     }
+
     cleanup_pidfile();
     gtk_main_quit();
     return TRUE;
@@ -269,6 +305,10 @@ static void load_applications(LauncherApp *app) {
         g_hash_table_add(seen, strdup(name));
 
         GtkWidget *child = gtk_flow_box_child_new();
+        GtkWidget *btn = gtk_button_new();
+        gtk_style_context_add_class(gtk_widget_get_style_context(btn), "app-btn");
+        gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+
         GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_style_context_add_class(gtk_widget_get_style_context(box), "app-tile");
         gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
@@ -291,7 +331,10 @@ static void load_applications(LauncherApp *app) {
         gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
         gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
 
-        gtk_container_add(GTK_CONTAINER(child), box);
+        gtk_container_add(GTK_CONTAINER(btn), box);
+        gtk_container_add(GTK_CONTAINER(child), btn);
+
+        g_signal_connect(btn, "clicked", G_CALLBACK(on_app_button_clicked), app_info);
 
         g_object_set_data_full(G_OBJECT(child), "app_info", app_info, g_object_unref);
         g_object_set_data_full(G_OBJECT(child), "app_name", strdup(name), free);
