@@ -1067,4 +1067,44 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   Never symlink or force Bluetooth patchram (`.hcd`) firmware files without verifying whether the target hardware bus is USB or UART/serdev. Patchram binaries targeting USB endpoints will disrupt UART transport on serdev SoC controllers. Furthermore, never treat persistent driver command timeouts (`tx timeout`, `-110`) as transient race conditions or suppress them with loglevel filters without actively verifying device operational readiness (`bluetoothctl show`) in userspace.
 
+---
+
+## 45. Inadequate Hinge Angle Margin for Ergonomic Laptop Viewing Angles in Convertible Posture Classifiers
+
+- **Date**: 2026-09-30
+- **Subsystem**: Posture Detection / Auto-Rotation Daemon / Accelerometer Sensor Fusion (`yogabook-autorotate`, `iio`, `libudev`, `wlr-randr`)
+- **Symptoms**:
+  - Tilting the screen comfortably backward while using the device in normal laptop posture on a desk or lap (past ~142°) triggered an unexpected transition from laptop mode to tablet mode (`Transition: LAPTOP -> TABLET/FLAT (~142.2°). Activating auto-rotation.`).
+  - Automatic screen rotation unexpectedly activated, and the hysteresis window (previously requiring an angle $\le 135.0^\circ$ to re-enter laptop mode) held the system in tablet mode even while resting flat.
+- **Root Cause**:
+  `LAPTOP_MAX_OPENING` was hardcoded to `142.0°` with re-entry `LAPTOP_ENTER_OPENING` at `135.0°`. On ultra-portable 10-inch 2-in-1 convertibles, users frequently tilt the display back between 140° and 160° when working with the device on their lap or looking down from desk height. With the base resting flat, this natural ergonomic tilt exceeded the 142.0° ceiling by fractions of a degree.
+- **Resolution**:
+  1. Increase `LAPTOP_MAX_OPENING` from `142.0` to `160.0` and `LAPTOP_ENTER_OPENING` from `135.0` to `152.0` in [`src/autorotate/main.c`](file:///home/andres/yogabook-config/src/autorotate/main.c).
+  2. Recompile [`bin/yogabook-autorotate`](file:///home/andres/yogabook-config/bin/yogabook-autorotate) and restart `rot8.service`.
+  3. The base orientation guard (`base_is_flat = b_z < -0.35 nb`) ensures that non-flat convertible configurations (tent mode, easel mode) transition to tablet mode immediately regardless of opening angle.
+- **Prevention Pattern**:
+  In posture classifiers for 360-degree convertible devices, never set laptop angle limits strictly to conventional 130°–140° clamshell bounds when base orientation confirms the device is resting flat on a horizontal surface. Accommodate wider ergonomic tilt ranges (up to ~160°) while relying on multi-axis gravity vectors on the base accelerometer to discriminate between flat laptop use and non-flat convertible postures.
+
+---
+
+## 46. 360° Tablet Posture Blindness via Coarse Singularity Threshold & 1D Base Horizontality Flaw
+
+- **Date**: 2026-09-30
+- **Subsystem**: Posture Detection / Auto-Rotation Daemon / Accelerometer Sensor Fusion (`yogabook-autorotate`, `iio`, `libudev`, `wlr-randr`)
+- **Symptoms**:
+  - Folding the device completely to 360° (tablet mode) while holding it in portrait orientation kept the screen stuck in landscape (`270`), with auto-rotation disabled. The user had to physically rotate the device to landscape and back to portrait to unstick the orientation.
+  - In laptop mode, tilting, lifting, or moving the laptop with the keyboard open triggered momentary false transitions to tablet mode (`Transition: LAPTOP -> TABLET/FLAT (~137.0°)`), risking erratic auto-rotation flips.
+- **Root Cause**:
+  1. *Oversized Singularity Gate*: The singularity threshold was set at `perp < 0.35` (requiring > 20.5° tilt). In portrait, gravity aligns with the hinge ($Y$); holding the tablet naturally in portrait often has an inclination between 10° and 20°, which fell below 0.35g, causing the daemon to abort posture calculation and freeze the prior state (`MODE_LAPTOP`).
+  2. *1D Base Flatness Misclassification*: `base_is_flat` only checked $b_z < -0.35 nb$. When holding the tablet in portrait tilted slightly back, $b_z$ pointed downwards, falsely marking the base as "flat on a desk". This prevented the 360° branch-cut mapping (`opening = 360.0 - opening`), falsely leaving the angle at ~0° (closed laptop).
+  3. *Premature Exit on Base Incline*: `cur_mode == MODE_LAPTOP` exited laptop mode if `!base_is_flat`, even when the keyboard was open at a valid laptop angle (e.g. 120°–140°), causing momentary tablet mode transitions upon lifting the laptop.
+- **Resolution**:
+  1. Lowered the singularity threshold from `0.35` to `0.20` in [`src/autorotate/main.c`](file:///home/andres/yogabook-config/src/autorotate/main.c), enabling angle detection across all natural portrait reading tilts (> 11.5°).
+  2. Enforced 2D horizontality in `base_is_flat`: `((double)b[2] < -0.35 * nb) && (fabs((double)b[0]) < 0.35 * nb)`. In portrait, the hinge is vertical ($|b_0| > 0.70 nb$), ensuring the base is never classified as resting flat on a desk.
+  3. Strictly bound laptop mode persistence to the physical opening angle (`opening < LAPTOP_MAX_OPENING` = 160.0°), preventing spurious rotation when lifting or tilting the laptop with the keyboard open.
+- **Prevention Pattern**:
+  In multi-sensor posture classifiers, never assess surface horizontality using a single normal axis ($Z$); always verify the cross-axis along the hinge to reject vertical orientations. Furthermore, never allow arbitrary chassis tilt to break clamshell mode while the physical opening angle unambiguously proves the device is operating within clamshell bounds.
+
+
+
 

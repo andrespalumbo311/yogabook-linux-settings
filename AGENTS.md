@@ -105,8 +105,8 @@ yogabook-config/
 - **2D Hinge Projection**: Projects gravity vectors onto the plane perpendicular to the hinge axis (X-Z cross-section). Computes real hinge opening ($0^\circ-360^\circ$) completely immune to roll tilt up to $70^\circ+$.
 - **Hinge Singularity Guard**: Freezes the mode (laptop vs tablet) when gravity aligns with the hinge axis (Y), preventing spurious flips when lifting or tilting the device.
 - **Hysteresis**:
-  - Laptop mode: opening $\le 135.0^\circ$ and base resting horizontal ($b_z < -0.35g$). Locks screen to landscape (`270`), disables auto-rotation.
-  - Tablet mode: opening $\ge 142.0^\circ$ (or flipped). Enables auto-rotation.
+  - Laptop mode: opening $\le 152.0^\circ$ and base resting horizontal ($b_z < -0.35g$). Locks screen to landscape (`270`), disables auto-rotation.
+  - Tablet mode: opening $\ge 160.0^\circ$ (or flipped). Enables auto-rotation.
 - **Table Flat-Lock**: If screen is tilted $< 53^\circ$ from horizontal ($|z| > 0.60$), orientation freezes completely so resting the device flat on a desk preserves the active orientation.
 - **Halo Keyboard Suppression**: Directly grabs/ungrabs `/dev/input/event*` nodes via `ioctl(EVIOCGRAB)` when opening $\ge 190.0^\circ$.
 

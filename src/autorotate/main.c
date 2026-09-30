@@ -22,8 +22,8 @@
 #define KBD_BACKLIGHT_SYSFS "/sys/class/leds/ybwmi::kbd_backlight/brightness"
 #define HDMI_STATUS_SYSFS "/sys/class/drm/card0-HDMI-A-1/status"
 
-#define LAPTOP_MAX_OPENING   142.0
-#define LAPTOP_ENTER_OPENING 135.0
+#define LAPTOP_MAX_OPENING   160.0
+#define LAPTOP_ENTER_OPENING 152.0
 #define KEYBOARD_DISABLE_ANGLE 190.0
 #define KEYBOARD_ENABLE_ANGLE  180.0
 
@@ -340,7 +340,7 @@ static DeviceMode get_posture(const int32_t s[3], const int32_t b[3], DeviceMode
     double perp_s = hypot(vs_x, vs_z) / ns;
     double perp_b = hypot(vb_x, vb_z) / nb;
 
-    if (perp_s < 0.35 || perp_b < 0.35) {
+    if (perp_s < 0.20 || perp_b < 0.20) {
         *out_opening = -1.0;
         return cur_mode;
     }
@@ -349,7 +349,7 @@ static DeviceMode get_posture(const int32_t s[3], const int32_t b[3], DeviceMode
     double dot_2d = vs_x * vb_x + vs_z * vb_z;
     double angle_2d = atan2(cross_2d, dot_2d) * (180.0 / M_PI);
 
-    bool base_is_flat = ((double)b[2] < -0.35 * nb);
+    bool base_is_flat = ((double)b[2] < -0.35 * nb) && (fabs((double)b[0]) < 0.35 * nb);
 
     double opening = 180.0 - angle_2d;
     while (opening < 0.0) opening += 360.0;
@@ -369,7 +369,7 @@ static DeviceMode get_posture(const int32_t s[3], const int32_t b[3], DeviceMode
     }
 
     if (cur_mode == MODE_LAPTOP) {
-        if (opening >= LAPTOP_MAX_OPENING || !base_is_flat) {
+        if (opening >= LAPTOP_MAX_OPENING) {
             return MODE_TABLET;
         }
         return MODE_LAPTOP;
