@@ -143,6 +143,9 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" /etc/udev/rules.d/62-yogabook-keyboard.rules
     fi
+    if [ -f "$REPO_DIR/src/touch-keyboard/touch_keyboard_handler" ]; then
+        sudo install -Dm755 "$REPO_DIR/src/touch-keyboard/touch_keyboard_handler" /usr/bin/touch_keyboard_handler
+    fi
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/65-yogabook-charging.rules" /etc/udev/rules.d/65-yogabook-charging.rules
     fi

@@ -52,6 +52,7 @@ yogabook-config/
 │   ├── autorotate/                # Native C Smart Auto-Rotation source and Makefile
 │   ├── autobrightness/            # Native C Smart Auto-Brightness source and Makefile
 │   ├── helpers/                   # Native C micro-helpers and watchers source and Makefile
+│   ├── touch-keyboard/            # Native C++ Halo Keyboard driver source & fix (490 KB RAM)
 │   └── wvkbd/                     # Native C Virtual Keyboard source, custom layout and Makefile
 ├── config/                        # User dotfiles (symlinked to ~/.config/)
 │   ├── mango/

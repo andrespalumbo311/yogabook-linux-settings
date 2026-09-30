@@ -1102,9 +1102,29 @@ This document records architectural, packaging, and runtime issues encountered o
   1. Lowered the singularity threshold from `0.35` to `0.20` in [`src/autorotate/main.c`](file:///home/andres/yogabook-config/src/autorotate/main.c), enabling angle detection across all natural portrait reading tilts (> 11.5°).
   2. Enforced 2D horizontality in `base_is_flat`: `((double)b[2] < -0.35 * nb) && (fabs((double)b[0]) < 0.35 * nb)`. In portrait, the hinge is vertical ($|b_0| > 0.70 nb$), ensuring the base is never classified as resting flat on a desk.
   3. Strictly bound laptop mode persistence to the physical opening angle (`opening < LAPTOP_MAX_OPENING` = 160.0°), preventing spurious rotation when lifting or tilting the laptop with the keyboard open.
+---
+
+## 47. Premature Modifier Key Hold Cancellation & Spurious Tap Rejection in Touch Keyboard Userspace Daemons
+
+- **Date**: 2026-09-30
+- **Subsystem**: Touch Keyboard Driver / Input Subsystem / Modifier Key Handling (`touch_keyboard_handler`, Goodix Touchscreen, `uinput`)
+- **Symptoms**:
+  - The `Shift` key (and other modifiers like `Ctrl`, `Alt`) intermittently or consistently failed to capitalize letters or register combinations when typing on the capacitive Halo Keyboard.
+  - Userspace daemon logs (`journalctl -u touch-keyboard-handler.service`) flooded with rejection errors during normal typing and modifier holds:
+    ```text
+    touch_keyboard_handler[7417]: I Tap rejected!  Diameter of 289 is out of range 300->3000
+    touch_keyboard_handler[7417]: I Tap rejected!  Diameter of 276 is out of range 300->3000
+    ```
+  - Standard alphanumeric keys tapped quickly (< 50ms) worked normally, but holding `Shift` while striking another key resulted in un-capitalized characters.
+- **Root Cause**:
+  1. *Chromebook Port Invariant Mismatch*: The userspace driver inherited `constexpr int kMinTapTouchDiameter = 300;` from ChromiumOS. The Goodix capacitive touchscreen (`ABS_MT_TOUCH_MAJOR`) on the Lenovo Yoga Book (YB1-X91F) reports contact diameters between ~180 and ~298 for natural fingertip touches, rarely reaching 300.
+  2. *Quick Tap Bypass vs. Held Modifier Penalty*: Quick taps (< 50ms) release before the 50ms debounce timer expires; the finger removal cleans up the `finger_data_` map entry and marks the event "guaranteed", causing the diameter check to be skipped entirely when `Consume()` executes. In contrast, held modifier keys (like `Shift`) remain active on the glass after 50ms; `Consume()` finds the entry in `finger_data_`, executes the diameter check, flags the normal 180–298 touch contact as invalid, and drops the `KeyDown` event.
+  3. *Unbalanced KeyRelease Events*: When the finger was eventually lifted from `Shift`, `HandleLeavingFinger` generated a `KeyUp` event (which bypassed the check), sending an isolated key release to the OS without a corresponding press.
+  4. *Zero Hysteresis on Flat Glass Key Boundaries*: Holding a key on flat glass with natural finger wobble/rolling caused `StillOnFirstKey()` to fail if the centroid drifted even 1 pixel beyond the key box, prematurely aborting the held modifier with `kRejectMovedOffKey`.
+- **Resolution**:
+  1. Lowered `kMinTapTouchDiameter` to `50` in [`src/touch-keyboard/fakekeyboard.cc`](file:///home/andres/yogabook-config/src/touch-keyboard/fakekeyboard.cc).
+  2. Explicitly exempted modifier keys (`Shift`, `Ctrl`, `Alt`, `Meta`, `CapsLock`, `Fn`) from tap diameter and pressure rejection filters.
+  3. Added a generous hysteresis margin (20–35 dots, ~3–4mm) to `Key::Contains()` in [`src/touch-keyboard/fakekeyboard.h`](file:///home/andres/yogabook-config/src/touch-keyboard/fakekeyboard.h) for `StillOnFirstKey()`, allowing natural finger roll without dropping held modifiers.
+  4. Integrated the native C++ touch-keyboard build into the repository's top-level [`src/Makefile`](file:///home/andres/yogabook-config/src/Makefile) and system synchronization in [`install.sh`](file:///home/andres/yogabook-config/install.sh).
 - **Prevention Pattern**:
-  In multi-sensor posture classifiers, never assess surface horizontality using a single normal axis ($Z$); always verify the cross-axis along the hinge to reject vertical orientations. Furthermore, never allow arbitrary chassis tilt to break clamshell mode while the physical opening angle unambiguously proves the device is operating within clamshell bounds.
-
-
-
-
+  When adapting touch-surface input drivers across differing hardware platforms, never assume capacitive sensor units (contact diameter, area, pressure) match upstream reference devices. Always profile actual evdev `ABS_MT_*` ranges on physical hardware. Crucially, never apply single-finger tap rejection thresholds (debounce, contact diameter) to sustained modifier keys (`Shift`, `Ctrl`, `Alt`) where holding and natural finger wobble are expected behaviors.
