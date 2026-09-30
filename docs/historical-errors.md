@@ -572,20 +572,20 @@ This document records architectural, packaging, and runtime issues encountered o
     kernel: cfg80211: failed to load regulatory.db
     ```
 - **Root Cause**:
-  1. *WPA2 GTK Rekey Dropped over NL80211 Control Port*: Access points on mesh topologies (e.g. AVM Fritz!Box / Fritz!Repeater) enforce a periodic 600-second Group Temporal Key (GTK) renewal. By default, `iwd` listens for EAPoL frames via nl80211 control port (`ControlPortOverNL80211=true`). The Broadcom FullMAC PCIe driver/firmware (`brcmfmac`) does not reliably deliver incoming GTK renewal frames over netlink, exacerbated by 802.11 power saving sleeping through DTIM multicast beacons. Because `iwd` never receives Message 1 to return Message 2, the AP times out and issues a forced IEEE 802.11 Deauthentication with code 2 (`WLAN_REASON_PREV_AUTH_NOT_VALID`).
-  2. *Autonomous Firmware Roaming Desynchronization*: In environments with multiple mesh APs, the Broadcom firmware's internal roaming engine (`roamoff=0` default) autonomously attempts BSSID migrations in the background. The on-chip roaming engine fails to coordinate the 4-way WPA handshake with the userland supplicant, triggering handshake timeouts (`reason: 1`) and scan engine stalls (`EBADE -52`).
+  1. *WPA2 GTK Rekey Dropped by On-Chip Firmware Supplicant (FWSUP) & NL80211 Control Port*: Access points on mesh topologies (e.g. AVM Fritz!Box / Fritz!Repeater) enforce a periodic 600-second Group Temporal Key (GTK) renewal. By default, `iwd` listens for EAPoL frames via nl80211 control port (`ControlPortOverNL80211=true`), while the Broadcom FullMAC PCIe firmware (`brcmfmac`) has built-in Firmware Supplicant (`BRCMF_FEAT_FWSUP`, bit `0x2000`) and SAE offload (`BRCMF_FEAT_SAE`, bit `0x80000`) enabled. The on-chip crypto engine intercepts and mishandles EAPoL GTK rekey frames, failing to coordinate with userland (`iwd`). Because `iwd` never completes Message 2, the AP times out and issues a forced IEEE 802.11 Deauthentication with code 2 (`WLAN_REASON_PREV_AUTH_NOT_VALID`) every 10 minutes.
+  2. *Autonomous Firmware Roaming & Over-Aggressive Roam Threshold*: In environments with multiple mesh APs, the Broadcom firmware's internal roaming engine (`roamoff=0` default) autonomously attempts BSSID migrations in the background. Furthermore, setting `RoamThreshold=-70` when the active 2.4 GHz BSSID hovers around -72 to -77 dBm keeps `iwd` in a permanent roaming state, causing frequent ping-ponging and spurious drops (`reason: 3, from_ap: false`).
   3. *Uninstalled Regulatory Database*: The absence of `wireless-regdb` on the minimal rootfs forces `cfg80211` into the global generic "world domain" (`00`), restricting transmission power (Tx power throttled to ~12–14 dBm instead of 20 dBm / 100 mW allowed in Italy/EU) and degrading SNR and throughput.
 - **Resolution**:
-  1. Disable internal firmware roaming in `system/etc/modprobe.d/brcmfmac.conf`:
+  1. Disable internal firmware roaming and on-chip supplicant/SAE offloads in `system/etc/modprobe.d/brcmfmac.conf` and kernel boot parameters:
      ```ini
-     options brcmfmac roamoff=1
+     options brcmfmac roamoff=1 feature_disable=0x82000
      ```
-     This delegates roaming decisions cleanly to userland (`iwd`) without firmware-level races.
-  2. Enforce raw PAE socket frame processing and disable Wi-Fi power save in `system/etc/iwd/main.conf`:
+     Bit `0x2000` (FWSUP) and `0x80000` (SAE) force the driver to delegate all 4-way and GTK handshakes directly and cleanly to `iwd`.
+  2. Enforce raw PAE socket frame processing, adjust mesh roam threshold, and disable Wi-Fi power save in `system/etc/iwd/main.conf`:
      ```ini
      [General]
      ControlPortOverNL80211=false
-     RoamThreshold=-70
+     RoamThreshold=-78
      RoamRetryInterval=60
 
      [DriverQuirks]
@@ -594,9 +594,9 @@ This document records architectural, packaging, and runtime issues encountered o
      PowerSaveDisable=brcmfmac
      ```
   3. Install `wireless-regdb` and `iw` (`sudo pacman -S --needed wireless-regdb iw`) and define `WIRELESS_REGDOM="IT"` in `system/etc/conf.d/wireless-regdom`.
-  4. Incorporate `modprobe.d/brcmfmac.conf`, `iwd/main.conf`, and `conf.d/wireless-regdom` into `install.sh --system` for deterministic synchronization.
+  4. Incorporate `modprobe.d/brcmfmac.conf`, `iwd/main.conf`, `conf.d/wireless-regdom`, and `brcmfmac.feature_disable=0x82000` boot entries into `install.sh --system` for deterministic synchronization.
 - **Prevention Pattern**:
-  On FullMAC wireless chipsets (Broadcom, Realtek) managed by modern userland daemons like `iwd`, never rely on nl80211 control port forwarding for EAPoL frames nor leave on-chip firmware roaming enabled in multi-AP/mesh environments. Always configure raw PAE socket capture (`ForcePae`), disable firmware-level roaming (`roamoff=1`), and ensure `wireless-regdb` is explicitly present in the base package set.
+  On FullMAC wireless chipsets (Broadcom BCM4356, Realtek) managed by modern userland daemons like `iwd`, never rely on on-chip firmware authentication offload (`FWSUP`) or nl80211 control port forwarding for EAPoL frames, nor leave on-chip firmware roaming enabled in multi-AP/mesh environments. Always disable firmware supplicant offloads (`brcmfmac.feature_disable=0x82000`), configure raw PAE socket capture (`ForcePae`), disable firmware-level roaming (`roamoff=1`), tune `RoamThreshold` appropriately for the physical RF environment, and ensure `wireless-regdb` is explicitly present in the base package set.
 
 ---
 
@@ -964,5 +964,48 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   In ephemeral or short-lived launcher processes dispatching actions via asynchronous IPC or D-Bus (such as GLib GIO `GAppInfo` or systemd `sd-bus`), never terminate the process or event loop immediately following an IPC invocation without explicitly flushing the connection (`g_dbus_connection_flush_sync` / `sd_bus_flush`). Furthermore, application launchers must index desktop keywords and descriptions rather than relying solely on display names.
 
+---
 
+## 41. GdkWindow Subwindow Local Coordinate Mismatch in Layer-Shell Overlay Backdrop Dismissal
+
+- **Date**: 2026-09-28
+- **Subsystem**: Application Launchers / Window Overlays / GTK3 Event Routing (`yogabook-launcher`, `GtkLayerShell`, `GtkScrolledWindow`, `GtkFlowBox`)
+- **Symptoms**:
+  - In a fullscreen overlay drawer / launcher, tapping application tiles with a finger on the touchscreen launches applications normally, but clicking on the exact same tiles using a physical touchpad pointer or mouse fails completely.
+  - Upon a touchpad/mouse click, the launcher dismisses and closes instantly without launching the selected application.
+  - The behavior makes the launcher appear functional on touch while completely broken for touchpad/mouse navigation.
+- **Root Cause**:
+  1. *Subwindow Coordinate Origin Mismatch*: In GTK3, widgets such as `GtkScrolledWindow` instantiate their own internal `GdkWindow` (viewport/bin window). When a pointer event (`GDK_BUTTON_PRESS`) occurs over a descendant widget inside the scrolled window, GDK reports `event->x` and `event->y` relative to that subwindow's origin (`0..viewport_width`), not the toplevel window.
+  2. *Naive Toplevel Bounding Box Comparison*: When the event bubbled up to the toplevel window, `on_window_button_press` compared the local subwindow coordinates against `app->card`'s toplevel allocation (`alloc.x ≈ 300`, `alloc.y ≈ 140` on a 1280×800 display). Because `event->x < alloc.x` evaluated to `FALSE`, the handler mistakenly concluded that the user clicked on the outer translucent backdrop, calling `gtk_main_quit()` and killing the process on button down before the click could be released or dispatched.
+  3. *Touch Event Asymmetry*: The toplevel window only registered `GDK_BUTTON_PRESS_MASK` and never connected to `touch-event`. Touchscreen taps generated Wayland `wl_touch` sequences that bypassed `on_window_button_press` entirely, reaching `GtkFlowBox`'s touch gesture engine and launching the app without triggering the premature dismiss.
+- **Resolution**:
+  1. In `on_window_button_press`, replace naive coordinate bounding-box math with GTK widget hierarchy inspection (`GtkWidget *target = gtk_get_event_widget((GdkEvent *)event)` and `gtk_widget_is_ancestor(target, app->card)`). If the event widget is `app->card` or any of its descendants, return `FALSE` to allow child widgets to process the click.
+  2. Implement coordinate parent translation traversal (`gdk_window_coords_to_parent`) up to the toplevel window as a secondary bounding box check.
+  3. Wrap each application tile in a native `GtkButton` with `relief = GTK_RELIEF_NONE` and direct `"clicked"` signal binding to `launch_app(app_info)`, with an idempotent `g_app_launched` guard to ensure deterministic activation across touchpads, mice, and touchscreens.
+- **Prevention Pattern**:
+  Never evaluate whether an event occurred inside a nested widget by comparing raw `event->x` / `event->y` against widget allocations in toplevel event handlers. Pointer events originating within widgets that own a `GdkWindow` (such as `GtkScrolledWindow`, `GtkViewport`, or `GtkEntry`) carry local coordinates relative to that subwindow. Always resolve the target widget via `gtk_get_event_widget()` and verify ancestry using `gtk_widget_is_ancestor()`, or recursively translate coordinates using `gdk_window_coords_to_parent()` before performing spatial bounding-box checks.
+
+---
+
+## 42. Intel Cherryview PCIe Fabric Hard-Lock on Broadcom FullMAC (brcmfmac) MSGBUF Teardown Stalls & Abrupt RFKill Power Cycles
+
+- **Date**: 2026-09-29
+- **Subsystem**: Wireless Drivers / PCIe Bus Power Management / Settings GUI (`brcmfmac`, `iwctl`, `iwd`, `rfkill`, `pcie_aspm`, `yogabook-settings`)
+- **Symptoms**:
+  - Complete, unrecoverable system freeze (hard lockup) with a frozen display requiring a forced hard power-off via the physical power button.
+  - No kernel panic, Oops, or coredump logged to disk; `journalctl` terminates abruptly without error traces.
+  - The freeze occurred shortly after disconnecting from Wi-Fi and toggling the Wi-Fi power switch in the Settings GUI (`yogabook-settings`).
+- **Root Cause**:
+  1. *MSGBUF Flowring Teardown Timeout*: Disconnecting from a Wi-Fi network triggers a flowring deletion over PCIe in `brcmfmac`. On Broadcom BCM4356 chips, the firmware occasionally fails to return `txstatus` (`brcmf_msgbuf_delete_flowring: timed out waiting for txstatus`), leaving ring buffers and DMA state partially wedged.
+  2. *Immediate Autoconnect Loop*: When `iwctl station wlan0 disconnect` was fired, `iwd` detected known networks configured with `AutoConnect=yes` and immediately attempted `autoconnect_quick`, initiating rapid re-association while flowring cleanup had failed.
+  3. *Abrupt RFKill Power Cut & Asynchronous Concurrency*: Toggling the Wi-Fi switch fired `rfkill block wifi` and `rfkill unblock wifi` on the wedged PCIe adapter, followed by timer-driven concurrent CLI scans (`iwctl station wlan0 scan` and `get-networks`).
+  4. *Intel Cherryview PCIe Fabric Hard-Lock*: The Intel Cherry Trail Atom x5-Z8550 SoC shares internal fabric interconnects (`iosf_mbi_pci`) between CPU cores, Gen8 GPU, and the PCIe root port (`00:1c.0`). When PCIe ASPM low-power transitions (L0s/L1) or DMA transactions encounter an uncompleted bus transaction or link drop without completion, the PCIe root port hangs, fatally freezing the entire SoC interconnect and locking up all CPU execution pipelines silently.
+- **Resolution**:
+  1. Disable PCIe ASPM by appending `pcie_aspm=off` to kernel boot parameters in `/boot/loader/entries/*.conf` and `install.sh`.
+  2. In `yogabook-settings`:
+     - Temporarily set `AutoConnect=no` on the active known network prior to firing `iwctl station wlan0 disconnect`, preventing instantaneous reconnection loops upon manual user disconnect. Re-enable `AutoConnect=yes` when the user manually reconnects.
+     - Add debouncing, scanning locks (`_is_scanning`), and RFKill state guards (`_is_wifi_blocked`) to suppress concurrent `iwctl` queries while the radio is powered down or recovering.
+     - Provide a 2.5s-3.0s grace period after `rfkill unblock` before polling station status, allowing `brcmfmac` and `cfg80211` to settle.
+- **Prevention Pattern**:
+  On Intel Cherry Trail / Bay Trail SoCs with PCIe wireless adapters, always disable PCIe Active State Power Management (`pcie_aspm=off`) to prevent unhandled PCIe link sleep stalls from freezing the internal SoC fabric. In wireless management interfaces, never issue hardware power-cuts (`rfkill`) concurrently with network scans, and ensure manual network disconnections prevent immediate supplicant autoconnect churn.
 

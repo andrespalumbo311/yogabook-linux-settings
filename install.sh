@@ -184,7 +184,7 @@ if [[ "${1:-}" == "--system" ]]; then
     # Performance & quiet kernel parameters in systemd-boot entries
     for boot_entry in /boot/loader/entries/yogabook.conf /boot/loader/entries/*linux*.conf; do
         if [ -f "$boot_entry" ]; then
-            for param in "mitigations=off" "i915.enable_fbc=1" "transparent_hugepage=madvise" "quiet" "loglevel=3"; do
+            for param in "mitigations=off" "i915.enable_fbc=1" "transparent_hugepage=madvise" "quiet" "loglevel=3" "pcie_aspm=off" "brcmfmac.feature_disable=0x82000"; do
                 if ! grep -q -- "$param" "$boot_entry"; then
                     echo "Adding $param to $boot_entry..."
                     sudo sed -i "s/\(^options .*\)/\1 $param/" "$boot_entry"
