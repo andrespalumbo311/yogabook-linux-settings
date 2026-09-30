@@ -1,2 +1,3 @@
-# Wireless regulatory domain configuration for Italy / European Union
-WIRELESS_REGDOM="IT"
+# Wireless regulatory domain configuration for European Union / ETSI (Austria)
+# Note: Country "IT" is missing from Broadcom/Cypress BCM4356 CLM blob; "AT" provides identical ETSI power/channels.
+WIRELESS_REGDOM="AT"
