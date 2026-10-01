@@ -65,6 +65,8 @@ link_file "$REPO_DIR/bin/mango-workspace-watcher" "$HOME_DIR/.local/bin/mango-wo
 link_file "$REPO_DIR/bin/yogabook-set-epb"    "$HOME_DIR/.local/bin/yogabook-set-epb"
 link_file "$REPO_DIR/bin/yogabook-autobrightness" "$HOME_DIR/.local/bin/yogabook-autobrightness"
 link_file "$REPO_DIR/bin/yogabook-mako-status"     "$HOME_DIR/.local/bin/yogabook-mako-status"
+link_file "$REPO_DIR/bin/yogabook-battery-status" "$HOME_DIR/.local/bin/yogabook-battery-status"
+link_file "$REPO_DIR/bin/yogabook-powerd"         "$HOME_DIR/.local/bin/yogabook-powerd"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
 fi
@@ -103,6 +105,7 @@ link_file "$REPO_DIR/config/systemd/user/polkit-gnome.service" "$HOME_DIR/.confi
 link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.config/systemd/user/easyeffects.service"
 link_file "$REPO_DIR/config/systemd/user/mango-workspace-watcher.service" "$HOME_DIR/.config/systemd/user/mango-workspace-watcher.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-autobrightness.service" "$HOME_DIR/.config/systemd/user/yogabook-autobrightness.service"
+link_file "$REPO_DIR/config/systemd/user/yogabook-powerd.service"         "$HOME_DIR/.config/systemd/user/yogabook-powerd.service"
 
 # 5. EasyEffects & PipeWire Audio Tuning
 link_file "$REPO_DIR/config/easyeffects/output" "$HOME_DIR/.local/share/easyeffects/output"

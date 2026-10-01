@@ -1128,3 +1128,53 @@ This document records architectural, packaging, and runtime issues encountered o
   4. Integrated the native C++ touch-keyboard build into the repository's top-level [`src/Makefile`](file:///home/andres/yogabook-config/src/Makefile) and system synchronization in [`install.sh`](file:///home/andres/yogabook-config/install.sh).
 - **Prevention Pattern**:
   When adapting touch-surface input drivers across differing hardware platforms, never assume capacitive sensor units (contact diameter, area, pressure) match upstream reference devices. Always profile actual evdev `ABS_MT_*` ranges on physical hardware. Crucially, never apply single-finger tap rejection thresholds (debounce, contact diameter) to sustained modifier keys (`Shift`, `Ctrl`, `Alt`) where holding and natural finger wobble are expected behaviors.
+
+---
+
+## 48. Fuel Gauge Coulomb Drift Desynchronization & False Waybar Capacity Display Triggering PMIC UVLO Brownout
+
+- **Date**: 2026-09-30
+- **Subsystem**: Power Management / Fuel Gauge Drivers / Desktop Status Bar (`bq27542-0`, `bq25892`, `Waybar`, `yogabook-powerd`)
+- **Symptoms**:
+  - Abrupt display flickering/flashing followed by sudden hard system reboot or shutdown under normal usage.
+  - Waybar indicated ~24% battery remaining right before the collapse, without triggering warning (30%) or critical (15%) states or notifications.
+  - The reboot failed to sustain operation without AC power, brownout-looping at 2.98V.
+- **Root Cause**:
+  1. *Waybar Capacity Calculation Bias*: In `battery.cpp`, Waybar calculates `capacity = 100 * charge_now / charge_full` whenever both files exist in sysfs, completely ignoring `/sys/class/power_supply/*/capacity`.
+  2. *Coulomb Counter Desynchronization on Degraded Cells*: On aged Li-ion cells (522+ cycles on the Yoga Book), the Texas Instruments BQ27542 Impedance Track gas gauge coulomb integrator (`charge_now`) drifts from reality unless periodic deep recalibrations occur. The register reported 1,505,000 µAh out of 6,245,000 µAh ($1505 / 6245 \approx 24.1\%$).
+  3. *Chemical Voltage Collapse vs True SOC*: The physical cell voltage had already collapsed to 2.987 V (below the 3.00 V 1S Li-ion safe floor). The BQ27542 chip's internal firmware correctly forced `capacity = 0%` and `health = Dead`.
+  4. *Voltage Sag & PMIC UVLO Trip*: Under SoC, GPU, and DSI panel load (~1.55A), the internal resistance of the exhausted cell caused severe voltage sag below the PMIC UVLO (~2.8V). The display inverter lost voltage regulation (producing violent screen flicker) before the PMIC cut power abruptly.
+  5. *Absence of Userspace Low-Power Daemon*: In a minimal Wayland stack (MangoWC), no daemon monitored voltage or true capacity to trigger warnings or graceful shutdown.
+- **Resolution**:
+  1. Implemented [`src/helpers/yogabook-battery-status.c`](file:///home/andres/yogabook-config/src/helpers/yogabook-battery-status.c), an ultra-fast (<0.5ms) native C JSON provider for Waybar querying `/sys/class/power_supply/bq27542-0/capacity` directly, rendering true SOC, PE+ 12V fast charge detection, voltage, power, and health.
+  2. Configured `custom/battery` in [`config/waybar/config.jsonc`](file:///home/andres/yogabook-config/config/waybar/config.jsonc) and [`config/waybar/style.css`](file:///home/andres/yogabook-config/config/waybar/style.css).
+  3. Fixed [`src/control-center/main.c`](file:///home/andres/yogabook-config/src/control-center/main.c) `update_battery_info` to read hardware `capacity` directly.
+  4. Implemented [`src/powerd/main.c`](file:///home/andres/yogabook-config/src/powerd/main.c) (`bin/yogabook-powerd`), a 0% CPU, <350 KB RAM native C daemon emitting desktop notifications at 15% (warning) and 5% (critical), and executing a safe graceful `systemctl poweroff` (with `sync()`) at $\le 2\%$ or cell voltage $\le 3.15\text{V}$, preventing PMIC UVLO brownouts and flash corruption.
+- **Prevention Pattern**:
+  When reading battery and power telemetry from Linux sysfs, never calculate State of Charge (SOC) via raw `charge_now / charge_full` arithmetic if the kernel/driver exports a calibrated `capacity` attribute. Gas gauge coulomb integrators drift significantly with cell aging and temperature, whereas chip firmware forces `capacity` to 0% upon chemical cutoff. On minimal desktop environments without integrated power managers, always deploy an active anti-brownout watchdog with hardware voltage floor triggers to guarantee clean shutdown before hardware PMIC UVLO cutoffs.
+
+---
+
+## 49. Architectural Conflation of Display Orientation Locking and Hardware Posture/Input Supervision
+
+- **Date**: 2026-10-01
+- **Subsystem**: Posture Detection / Auto-Rotation Daemon / Hardware Peripheral Supervision (`rot8.service`, `yogabook-autorotate`, `yogabook-control-center`, `yogabook-settings`, `Goodix-TS`)
+- **Symptoms**:
+  - Disabling auto-rotation via Control Center quick tile or Settings app while in Tablet or Tent mode unexpectedly re-enables the physical Halo Keyboard and touchpad.
+  - Resting the device in Tent mode triggers spurious keypresses, cursor jumps, and haptic clicks on the desk surface; the keyboard backlight remains energized.
+  - Returning the physical device to Laptop mode fails to rotate the screen back to standard landscape (270°), leaving the user with an inverted or sideways display in front of the physical keyboard.
+- **Root Cause**:
+  1. *Daemon Lifecycle Conflated with UI Setting*: The quick tile in `yogabook-control-center` and toggle in `yogabook-settings` implemented rotation disabling as `systemctl --user stop rot8.service`.
+  2. *Cleanup Side-Effects on Service Termination*: The `yogabook-autorotate` daemon is not simply an orientation changer, but the primary convertible posture and input supervisor. Its exit handler invoked `kbd_enable()`, re-starting `touch-keyboard-handler.service`, releasing evdev grabs (`EVIOCGRAB`), and turning on the backlight.
+  3. *Loss of Background Monitoring*: Stopping the daemon eliminated hinge angle sampling entirely, preventing the system from suppressing keyboard input in tent mode ($\ge 190^\circ$) and preventing display recovery to 270° when returned to laptop mode.
+- **Resolution**:
+  1. Decoupled the rotation lock mechanism from the supervisor lifecycle. `rot8.service` now remains active at all times.
+  2. Introduced runtime lock file `/run/user/$UID/yogabook-rotation.lock` and exported state flag in `/run/user/$UID/yogabook-rotation.state`.
+  3. In `yogabook-autorotate` ([`src/autorotate/main.c`](file:///home/andres/yogabook-config/src/autorotate/main.c)):
+     - When rotation is locked, continuous orientation tracking is paused, but hinge angle detection, keyboard grab suppression, and LED controls continue uninterrupted in all postures.
+     - Mode transitions to `MODE_LAPTOP` unconditionally enforce standard landscape orientation (`apply_transform(TR_270)`) and restore the keyboard, fulfilling the expectation that folding into laptop posture always restores laptop display orientation.
+     - Transitions to `MODE_TABLET` with rotation locked sample orientation once on entry to match how the device was opened, and then lock orientation.
+  4. Updated [`src/control-center/main.c`](file:///home/andres/yogabook-config/src/control-center/main.c) and [`bin/yogabook-settings`](file:///home/andres/yogabook-config/bin/yogabook-settings) to toggle the lock file rather than manipulating `rot8.service` state.
+- **Prevention Pattern**:
+  Never conflate the lifecycle of background hardware supervisors with user-facing toggle settings. When a daemon is responsible for multi-domain responsibilities (such as sensor fusion, peripheral gating, and display transformation), user-facing switches must toggle isolated policy flags via lightweight IPC or runtime lock files rather than terminating the supervisory service. Transitions to physical base postures (e.g. laptop mode) must unconditionally restore platform baseline invariants (display rotation, physical input devices) regardless of software lock states.
+

@@ -10,7 +10,8 @@ TARGETS = \
 	$(BIN_DIR)/ws-status \
 	$(BIN_DIR)/yogabook-mako-status \
 	$(BIN_DIR)/toggle-keyboard \
-	$(BIN_DIR)/mango-workspace-watcher
+	$(BIN_DIR)/mango-workspace-watcher \
+	$(BIN_DIR)/yogabook-battery-status
 
 all: $(TARGETS)
 
@@ -40,6 +41,10 @@ $(BIN_DIR)/ws-status: ws-status.c
 
 $(BIN_DIR)/yogabook-mako-status: yogabook-mako-status.c
 	$(CC) $(CFLAGS) $< -o $@
+	chmod +x $@
+
+$(BIN_DIR)/yogabook-battery-status: yogabook-battery-status.c
+	$(CC) $(CFLAGS) $< -o $@ -lm
 	chmod +x $@
 
 clean:

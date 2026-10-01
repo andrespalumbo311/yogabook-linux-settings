@@ -13,7 +13,7 @@
     "modules-right": [
         "custom/keyboard",
         "network",
-        "battery",
+        "custom/battery",
         "tray",
         "custom/notification",
         "custom/close"
@@ -94,19 +94,13 @@
         "tooltip-format": "{essid} ({signalStrength}%)",
         "on-click": "/home/andres/.local/bin/toggle-control-center"
     },
-    "battery": {
-        "states": {
-            "warning": 30,
-            "critical": 15
-        },
-        "format": "{icon} {capacity}%",
-        "format-charging": "󰂄 {capacity}%",
-        "format-plugged": "󰚥 {capacity}%",
-        "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
-        "tooltip-format": "{timeTo}\nConsumo: {power:.2f}W\nSalute: {health}%",
-        "tooltip-format-charging": "{timeTo}\nCarica: {power:.2f}W\nSalute: {health}%",
-        "tooltip-format-plugged": "Alimentatore collegato\nSalute: {health}%",
-        "on-click": "/home/andres/.local/bin/toggle-control-center"
+    "custom/battery": {
+        "exec": "/home/andres/.local/bin/yogabook-battery-status",
+        "return-type": "json",
+        "interval": 10,
+        "signal": 8,
+        "on-click": "/home/andres/.local/bin/toggle-control-center",
+        "escape": true
     },
     "tray": {
         "icon-size": 18,

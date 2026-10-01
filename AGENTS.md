@@ -39,6 +39,8 @@ yogabook-config/
 │   ├── yogabook-launcher          # Native C touch App Launcher (GTK 3 + Layer-Shell, 0 MB idle)
 │   ├── toggle-launcher            # Instant toggle binary for App Launcher (Native C)
 │   ├── yogabook-mako-status       # Real-time Mako notification & DND status provider (Native C)
+│   ├── yogabook-battery-status    # Direct hardware SOC battery status provider for Waybar (Native C)
+│   ├── yogabook-powerd            # Low-battery alert & anti-brownout protection daemon (Native C, 350 KB RAM)
 │   ├── toggle-keyboard            # Instant toggle binary for wvkbd virtual keyboard (Native C)
 │   ├── close-window               # Safe IPC window close binary for MangoWC (Native C)
 │   ├── ws-status                  # Dynamic workspace status provider for Waybar (Native C)
@@ -51,6 +53,7 @@ yogabook-config/
 │   ├── launcher/                  # Native C Application Launcher source and Makefile
 │   ├── autorotate/                # Native C Smart Auto-Rotation source and Makefile
 │   ├── autobrightness/            # Native C Smart Auto-Brightness source and Makefile
+│   ├── powerd/                    # Native C Power & Anti-Brownout daemon and Makefile
 │   ├── helpers/                   # Native C micro-helpers and watchers source and Makefile
 │   ├── touch-keyboard/            # Native C++ Halo Keyboard driver source & fix (490 KB RAM)
 │   └── wvkbd/                     # Native C Virtual Keyboard source, custom layout and Makefile
@@ -136,6 +139,14 @@ yogabook-config/
 - Event-driven D-Bus subscriber with perceptual human-eye LUT curve, exponential moving average (EMA) noise filtration, and deadband hysteresis ($3\%$).
 - Implements fluid stepped ramping ($1\%$ per 30ms) to eliminate eye strain and abrupt lighting jumps.
 - Supports adaptive user bias: automatically detects manual slider adjustments in the Control Center / Settings and preserves the offset relative to the curve across lighting transitions.
+
+### 7. Power, Battery & Anti-Brownout Protection Stack (`bin/yogabook-powerd` & `bin/yogabook-battery-status`)
+- **Fuel Gauge Driver Quirks**: Texas Instruments BQ27542-G1 computes chemical SOC (`capacity`) via Impedance Track. On worn cells (500+ cycles), coulomb integration (`charge_now`) can desynchronize, causing naive calculators (`charge_now / charge_full`) to report ~24% when the cell is at 0% / 2.98V.
+- **Waybar Provider (`bin/yogabook-battery-status`)**: Native C JSON provider querying `/sys/class/power_supply/bq27542-0/capacity` directly, rendering accurate SOC, PE+ fast-charge detection, voltage, power, and battery health in <0.5ms.
+- **Protection Daemon (`bin/yogabook-powerd`)**: Native C systemd user daemon (<350 KB RAM, 0% CPU).
+  - Emits desktop notifications via `notify-send` / Mako at 15% (warning) and 5% (critical).
+  - **Emergency Cut-off**: Gracefully shuts down the system (`systemctl poweroff` with pre-sync) at $\le 2\%$ or cell voltage $\le 3.15\text{V}$, preventing abrupt PMIC UVLO trips, display inverter flicker, and eMMC flash corruption.
+  - Automatically signals Waybar (`pkill -RTMIN+8 waybar`) on charge state and capacity changes.
 
 ---
 

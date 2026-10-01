@@ -25,6 +25,7 @@ window#waybar {
 #custom-keyboard,
 #custom-close,
 #battery,
+#custom-battery,
 #network,
 #tray,
 #custom-notification {
@@ -159,17 +160,21 @@ window#waybar {
 }
 
 /* Battery */
-#battery {
+#battery,
+#custom-battery {
     padding: 2px 10px;
     color: #0b57d0;
 }
-#battery.charging {
+#battery.charging,
+#custom-battery.charging {
     color: #16a34a;
 }
-#battery.warning:not(.charging) {
+#battery.warning:not(.charging),
+#custom-battery.warning:not(.charging) {
     color: #ea580c;
 }
-#battery.critical:not(.charging) {
+#battery.critical:not(.charging),
+#custom-battery.critical:not(.charging) {
     color: #dc2626;
     animation-name: blink;
     animation-duration: 1s;

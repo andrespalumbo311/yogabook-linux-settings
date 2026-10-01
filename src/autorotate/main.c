@@ -73,6 +73,7 @@ static struct {
 };
 
 static char g_state_file[128] = {0};
+static char g_lock_file[128] = {0};
 static volatile sig_atomic_t g_running = 1;
 
 static int get_kbd_backlight(void) {
@@ -220,13 +221,36 @@ static void kbd_disable(void) {
     kbd_maintain_disabled();
 }
 
-static void write_state(DeviceMode mode, TransformId tr) {
+static bool is_rotation_locked(TransformId *out_tr) {
+    if (out_tr) *out_tr = (TransformId)-1;
+    if (!g_lock_file[0] || access(g_lock_file, F_OK) != 0) {
+        return false;
+    }
+    if (out_tr) {
+        FILE *f = fopen(g_lock_file, "r");
+        if (f) {
+            char buf[32] = {0};
+            if (fgets(buf, sizeof(buf), f)) {
+                buf[strcspn(buf, "\r\n")] = '\0';
+                if (strcmp(buf, "normal") == 0) *out_tr = TR_NORMAL;
+                else if (strcmp(buf, "90") == 0) *out_tr = TR_90;
+                else if (strcmp(buf, "180") == 0) *out_tr = TR_180;
+                else if (strcmp(buf, "270") == 0) *out_tr = TR_270;
+            }
+            fclose(f);
+        }
+    }
+    return true;
+}
+
+static void write_state(DeviceMode mode, TransformId tr, bool auto_enabled) {
     if (!g_state_file[0]) return;
     FILE *f = fopen(g_state_file, "w");
     if (!f) return;
-    fprintf(f, "mode=%s\ntransform=%s\n",
+    fprintf(f, "mode=%s\ntransform=%s\nautorotate=%d\n",
             mode == MODE_LAPTOP ? "laptop" : "tablet",
-            transform_to_string(tr));
+            transform_to_string(tr),
+            auto_enabled ? 1 : 0);
     fclose(f);
 }
 
@@ -474,6 +498,7 @@ int main(void) {
     setvbuf(stderr, NULL, _IONBF, 0);
 
     snprintf(g_state_file, sizeof(g_state_file), "/run/user/%d/yogabook-rotation.state", getuid());
+    snprintf(g_lock_file, sizeof(g_lock_file), "/run/user/%d/yogabook-rotation.lock", getuid());
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -514,16 +539,25 @@ int main(void) {
         usleep(100000);
     }
 
+    TransformId initial_locked_tr = (TransformId)-1;
+    bool initial_locked = is_rotation_locked(&initial_locked_tr);
+
     if (current_mode == MODE_TABLET) {
-        printf("[INFO] Initial posture: TABLET / FLAT (~%.1f°). Enabling auto-rotation.\n", initial_opening);
-        TransformId target_tr = tracker_update(s);
+        printf("[INFO] Initial posture: TABLET / FLAT (~%.1f°).\n", initial_opening);
+        TransformId target_tr;
+        if (initial_locked && initial_locked_tr != (TransformId)-1) {
+            target_tr = initial_locked_tr;
+        } else {
+            target_tr = tracker_update(s);
+        }
+        tracker_force(target_tr);
         apply_transform(target_tr);
-        write_state(MODE_TABLET, target_tr);
+        write_state(MODE_TABLET, target_tr, !initial_locked);
     } else {
         printf("[INFO] Initial posture: LAPTOP (~%.1f°). Locking orientation to %s.\n", initial_opening, DEFAULT_TRANSFORM);
         tracker_force(TR_270);
         apply_transform(TR_270);
-        write_state(MODE_LAPTOP, TR_270);
+        write_state(MODE_LAPTOP, TR_270, !initial_locked);
     }
 
     if (initial_opening >= KEYBOARD_DISABLE_ANGLE) {
@@ -533,6 +567,7 @@ int main(void) {
     DeviceMode mode_debounce_target = current_mode;
     int mode_debounce_count = 0;
     char last_hdmi_status[32] = {0};
+    bool last_locked = initial_locked;
 
     // Initial HDMI status
     FILE *f_hdmi = fopen(HDMI_STATUS_SYSFS, "r");
@@ -576,7 +611,30 @@ int main(void) {
         double opening = 0.0;
         DeviceMode detected_mode = get_posture(s, b, current_mode, false, &opening);
 
-        // 3. Halo Keyboard state management
+        // Check rotation lock status
+        TransformId locked_target = (TransformId)-1;
+        bool locked = is_rotation_locked(&locked_target);
+
+        if (locked != last_locked) {
+            if (locked) {
+                printf("[INFO] Auto-rotation locked by user.\n");
+                if (current_mode == MODE_TABLET && locked_target != (TransformId)-1) {
+                    apply_transform(locked_target);
+                    tracker_force(locked_target);
+                }
+            } else {
+                printf("[INFO] Auto-rotation unlocked by user.\n");
+                if (current_mode == MODE_TABLET) {
+                    TransformId target_tr = tracker_update(s);
+                    apply_transform(target_tr);
+                    tracker_force(target_tr);
+                }
+            }
+            write_state(current_mode, g_tracker.current, !locked);
+            last_locked = locked;
+        }
+
+        // 3. Halo Keyboard state management (ALWAYS active across all modes)
         if (opening >= 0.0) {
             if (opening >= KEYBOARD_DISABLE_ANGLE) {
                 kbd_disable();
@@ -592,15 +650,21 @@ int main(void) {
                 if (mode_debounce_count >= MODE_DEBOUNCE_THRESHOLD) {
                     current_mode = detected_mode;
                     if (current_mode == MODE_TABLET) {
-                        printf("[INFO] Transition: LAPTOP -> TABLET/FLAT (~%.1f°). Activating auto-rotation.\n", opening);
-                        TransformId target_tr = tracker_update(s);
+                        printf("[INFO] Transition: LAPTOP -> TABLET/FLAT (~%.1f°).\n", opening);
+                        TransformId target_tr;
+                        if (locked && locked_target != (TransformId)-1) {
+                            target_tr = locked_target;
+                        } else {
+                            target_tr = tracker_update(s);
+                        }
+                        tracker_force(target_tr);
                         apply_transform(target_tr);
-                        write_state(MODE_TABLET, target_tr);
+                        write_state(MODE_TABLET, target_tr, !locked);
                     } else {
-                        printf("[INFO] Transition: TABLET/FLAT -> LAPTOP (~%.1f°). Locking orientation to %s.\n", opening, DEFAULT_TRANSFORM);
+                        printf("[INFO] Transition: TABLET/FLAT -> LAPTOP (~%.1f°). Restoring laptop orientation %s.\n", opening, DEFAULT_TRANSFORM);
                         tracker_force(TR_270);
                         apply_transform(TR_270);
-                        write_state(MODE_LAPTOP, TR_270);
+                        write_state(MODE_LAPTOP, TR_270, !locked);
                         int r = system("pkill -SIGUSR1 -x wvkbd >/dev/null 2>&1");
                         (void)r;
                     }
@@ -618,11 +682,17 @@ int main(void) {
 
         // 5. Tablet continuous orientation tracking
         if (current_mode == MODE_TABLET) {
-            TransformId prev_tr = g_tracker.current;
-            TransformId target_tr = tracker_update(s);
-            if (target_tr != prev_tr) {
-                apply_transform(target_tr);
-                write_state(MODE_TABLET, target_tr);
+            if (!locked) {
+                TransformId prev_tr = g_tracker.current;
+                TransformId target_tr = tracker_update(s);
+                if (target_tr != prev_tr) {
+                    apply_transform(target_tr);
+                    write_state(MODE_TABLET, target_tr, true);
+                }
+            } else if (locked_target != (TransformId)-1 && locked_target != g_tracker.current) {
+                apply_transform(locked_target);
+                tracker_force(locked_target);
+                write_state(MODE_TABLET, locked_target, false);
             }
         }
     }

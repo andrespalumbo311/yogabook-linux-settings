@@ -1,4 +1,4 @@
-SUBDIRS = control-center launcher autorotate autobrightness helpers wvkbd touch-keyboard
+SUBDIRS = control-center launcher autorotate autobrightness helpers wvkbd touch-keyboard powerd
 
 all:
 	@for dir in $(SUBDIRS); do \

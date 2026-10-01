@@ -241,25 +241,39 @@ static void spawn_async(const char *cmd) {
 
 // Battery Info
 static void update_battery_info(AppState *app) {
-    int charge_now = 0, charge_full = 0;
+    int cap = -1;
     char status[32] = "Discharging";
     FILE *f;
 
-    f = fopen("/sys/class/power_supply/bq27542-0/charge_now", "r");
-    if (f) { fscanf(f, "%d", &charge_now); fclose(f); }
-
-    f = fopen("/sys/class/power_supply/bq27542-0/charge_full", "r");
-    if (f) { fscanf(f, "%d", &charge_full); fclose(f); }
+    f = fopen("/sys/class/power_supply/bq27542-0/capacity", "r");
+    if (f) {
+        if (fscanf(f, "%d", &cap) != 1) cap = -1;
+        fclose(f);
+    }
 
     f = fopen("/sys/class/power_supply/bq27542-0/status", "r");
-    if (f) { fscanf(f, "%31s", status); fclose(f); }
-
-    int cap = 50;
-    if (charge_full > 0) {
-        cap = (int)round(charge_now * 100.0 / charge_full);
-        if (cap < 0) cap = 0;
-        if (cap > 100) cap = 100;
+    if (f) {
+        if (fscanf(f, "%31s", status) != 1) strcpy(status, "Discharging");
+        fclose(f);
     }
+
+    if (cap < 0) {
+        int charge_now = 0, charge_full = 0;
+        f = fopen("/sys/class/power_supply/bq27542-0/charge_now", "r");
+        if (f) { fscanf(f, "%d", &charge_now); fclose(f); }
+
+        f = fopen("/sys/class/power_supply/bq27542-0/charge_full", "r");
+        if (f) { fscanf(f, "%d", &charge_full); fclose(f); }
+
+        if (charge_full > 0) {
+            cap = (int)round(charge_now * 100.0 / charge_full);
+        } else {
+            cap = 50;
+        }
+    }
+
+    if (cap < 0) cap = 0;
+    if (cap > 100) cap = 100;
 
     gboolean charging = (strcmp(status, "Charging") == 0 || strcmp(status, "Full") == 0);
     const char *icon = charging ? "󰂄" : (cap > 90 ? "󰁹" : (cap > 60 ? "󰂀" : (cap > 30 ? "󰁾" : "󰁻")));
@@ -531,31 +545,52 @@ static void toggle_kbd(gpointer user_data) {
     gtk_main_quit();
 }
 
-// 4. Rotation (1:1 with Python logic)
+// 4. Rotation (Decoupled lock mechanism; rot8.service is never killed)
 static gboolean check_rot_status(char *out_sub, size_t maxlen) {
+    char lock_path[128];
+    snprintf(lock_path, sizeof(lock_path), "/run/user/%d/yogabook-rotation.lock", getuid());
+    gboolean is_locked = (access(lock_path, F_OK) == 0);
+
     char state_path[128];
     snprintf(state_path, sizeof(state_path), "/run/user/%d/yogabook-rotation.state", getuid());
     if (access(state_path, F_OK) != 0) {
         snprintf(out_sub, maxlen, "Disattivata");
         return FALSE;
     }
-    FILE *f = fopen(state_path, "r");
+
     char mode[32] = "laptop";
+    char tr[32] = "270";
+    int autorotate = is_locked ? 0 : 1;
+
+    FILE *f = fopen(state_path, "r");
     if (f) {
         char line[64];
         while (fgets(line, sizeof(line), f)) {
             if (strncmp(line, "mode=", 5) == 0) {
                 sscanf(line + 5, "%31s", mode);
+            } else if (strncmp(line, "transform=", 10) == 0) {
+                sscanf(line + 10, "%31s", tr);
+            } else if (strncmp(line, "autorotate=", 11) == 0) {
+                sscanf(line + 11, "%d", &autorotate);
             }
         }
         fclose(f);
     }
-    if (strcmp(mode, "tablet") == 0) {
-        snprintf(out_sub, maxlen, "Attiva (Tablet)");
-        return TRUE;
-    } else {
-        snprintf(out_sub, maxlen, "Bloccata (Laptop)");
+
+    if (is_locked || autorotate == 0) {
+        if (strcmp(mode, "tablet") == 0) {
+            snprintf(out_sub, maxlen, "Bloccata (%s°)", tr);
+        } else {
+            snprintf(out_sub, maxlen, "Bloccata (Laptop)");
+        }
         return FALSE;
+    } else {
+        if (strcmp(mode, "tablet") == 0) {
+            snprintf(out_sub, maxlen, "Attiva (Tablet)");
+        } else {
+            snprintf(out_sub, maxlen, "Attiva (Laptop)");
+        }
+        return TRUE;
     }
 }
 
@@ -569,12 +604,40 @@ static gboolean idle_update_rot(gpointer user_data) {
 
 static void* thread_toggle_rot(void *arg) {
     (void)arg;
-    int is_active = (system("systemctl --user is-active rot8.service >/dev/null 2>&1") == 0);
-    if (is_active) {
-        system("systemctl --user stop rot8.service >/dev/null 2>&1");
-    } else {
+    char lock_path[128];
+    snprintf(lock_path, sizeof(lock_path), "/run/user/%d/yogabook-rotation.lock", getuid());
+
+    // Ensure rot8.service is active
+    if (system("systemctl --user is-active --quiet rot8.service") != 0) {
         system("systemctl --user start rot8.service >/dev/null 2>&1");
+        usleep(200000);
     }
+
+    if (access(lock_path, F_OK) == 0) {
+        // Currently locked -> Unlock
+        unlink(lock_path);
+    } else {
+        // Currently unlocked -> Lock
+        char state_path[128];
+        snprintf(state_path, sizeof(state_path), "/run/user/%d/yogabook-rotation.state", getuid());
+        char tr[32] = "current";
+        FILE *sf = fopen(state_path, "r");
+        if (sf) {
+            char line[64];
+            while (fgets(line, sizeof(line), sf)) {
+                if (strncmp(line, "transform=", 10) == 0) {
+                    sscanf(line + 10, "%31s", tr);
+                }
+            }
+            fclose(sf);
+        }
+        FILE *lf = fopen(lock_path, "w");
+        if (lf) {
+            fprintf(lf, "%s\n", tr);
+            fclose(lf);
+        }
+    }
+
     usleep(150000); // 150ms
     g_idle_add(idle_update_rot, NULL);
     return NULL;
