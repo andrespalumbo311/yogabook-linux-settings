@@ -20,7 +20,7 @@
     ],
     "custom/launcher": {
         "format": "󰀻",
-        "tooltip": "Menu Applicazioni Touch",
+        "tooltip": false,
         "on-click": "/home/andres/.local/bin/toggle-launcher"
     },
     "group/workspaces": {
