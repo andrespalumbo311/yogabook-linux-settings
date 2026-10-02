@@ -175,12 +175,8 @@ window#waybar {
 }
 #battery.critical:not(.charging),
 #custom-battery.critical:not(.charging) {
-    color: #dc2626;
-    animation-name: blink;
-    animation-duration: 1s;
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
-    animation-direction: alternate;
+    background-color: #dc2626;
+    color: #ffffff;
 }
 
 /* System Tray */
@@ -222,11 +218,4 @@ window#waybar {
 #custom-close label {
     margin: 0;
     padding: 0;
-}
-
-@keyframes blink {
-    to {
-        background-color: #dc2626;
-        color: #ffffff;
-    }
 }

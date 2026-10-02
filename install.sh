@@ -158,6 +158,10 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/systemd/zram-generator.conf" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/systemd/zram-generator.conf" /etc/systemd/zram-generator.conf
     fi
+    if [ -f "$REPO_DIR/system/etc/ananicy.d/99-yogabook.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/ananicy.d/99-yogabook.rules" /etc/ananicy.d/99-yogabook.rules
+        sudo systemctl restart ananicy-cpp.service || true
+    fi
     if [ -f "$REPO_DIR/bin/yogabook-charger-negotiate" ]; then
         sudo install -Dm755 "$REPO_DIR/bin/yogabook-charger-negotiate" /usr/local/bin/yogabook-charger-negotiate
     fi

@@ -20,6 +20,9 @@
 #include <signal.h>
 #include <syslog.h>
 #include <sys/types.h>
+#include <time.h>
+#include <errno.h>
+#include <systemd/sd-bus.h>
 
 #define BATT_CAPACITY_PATH "/sys/class/power_supply/bq27542-0/capacity"
 #define BATT_VOLTAGE_PATH  "/sys/class/power_supply/bq27542-0/voltage_now"
@@ -32,11 +35,57 @@
 #define EMERGENCY_CAPACITY_PCT 2
 
 static volatile sig_atomic_t g_running = 1;
+static volatile sig_atomic_t g_resumed_from_sleep = 0;
 
 static void handle_signal(int sig) {
     if (sig == SIGINT || sig == SIGTERM) {
         g_running = 0;
     }
+}
+
+static int on_prepare_for_sleep(sd_bus_message *m, void *userdata, sd_bus_error *ret_error) {
+    (void)userdata;
+    (void)ret_error;
+    int going_to_sleep = 0;
+    int r = sd_bus_message_read(m, "b", &going_to_sleep);
+    if (r < 0) return 0;
+
+    if (going_to_sleep) {
+        syslog(LOG_INFO, "System entering sleep (s2idle)...");
+    } else {
+        syslog(LOG_INFO, "System resumed from sleep: recovering PipeWire audio & refreshing battery status");
+        // Non-blocking restart of PipeWire audio stack to clear any broken pipe / stale DMA handle
+        int ret = system("systemctl --user restart pipewire wireplumber &");
+        (void)ret;
+        // Immediate Waybar battery update
+        ret = system("pkill -RTMIN+8 waybar 2>/dev/null &");
+        (void)ret;
+        g_resumed_from_sleep = 1;
+    }
+    return 0;
+}
+
+static sd_bus* init_dbus(void) {
+    sd_bus *bus = NULL;
+    int r = sd_bus_open_system(&bus);
+    if (r < 0) {
+        syslog(LOG_WARNING, "Failed to connect to system bus: %s", strerror(-r));
+        return NULL;
+    }
+    r = sd_bus_match_signal(bus, NULL,
+                            "org.freedesktop.login1",
+                            "/org/freedesktop/login1",
+                            "org.freedesktop.login1.Manager",
+                            "PrepareForSleep",
+                            on_prepare_for_sleep,
+                            NULL);
+    if (r < 0) {
+        syslog(LOG_WARNING, "Failed to subscribe to PrepareForSleep signal: %s", strerror(-r));
+        sd_bus_close(bus);
+        sd_bus_unref(bus);
+        return NULL;
+    }
+    return bus;
 }
 
 static int read_int_file(const char *path, int default_val) {
@@ -94,6 +143,8 @@ int main(void) {
     openlog("yogabook-powerd", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "Yoga Book power & brownout protection daemon started.");
 
+    sd_bus *bus = init_dbus();
+
     bool warned_15 = false;
     bool warned_5 = false;
     bool emergency_triggered = false;
@@ -102,6 +153,10 @@ int main(void) {
     char last_status[32] = "";
 
     while (g_running) {
+        if (g_resumed_from_sleep) {
+            g_resumed_from_sleep = 0;
+        }
+
         int capacity = read_int_file(BATT_CAPACITY_PATH, -1);
         long voltage_uV = read_long_file(BATT_VOLTAGE_PATH, 0);
         int charger_online = read_int_file(CHARGER_ONLINE_PATH, 0);
@@ -176,12 +231,38 @@ int main(void) {
 
         // Sleep interval: 10s if discharging, 30s if charging/plugged
         int sleep_sec = is_discharging ? 10 : 30;
-        for (int i = 0; i < sleep_sec && g_running; i++) {
-            sleep(1);
+        time_t next_check = time(NULL) + sleep_sec;
+
+        while (g_running && !g_resumed_from_sleep) {
+            time_t now = time(NULL);
+            if (now >= next_check) {
+                break;
+            }
+
+            if (bus) {
+                while (sd_bus_process(bus, NULL) > 0) {}
+                if (g_resumed_from_sleep || !g_running) break;
+
+                uint64_t wait_us = (uint64_t)(next_check - now) * 1000000ULL;
+                int r = sd_bus_wait(bus, wait_us);
+                if (r < 0 && r != -EINTR) {
+                    syslog(LOG_WARNING, "D-Bus wait error: %s, attempting reconnect...", strerror(-r));
+                    sd_bus_close(bus);
+                    sd_bus_unref(bus);
+                    bus = NULL;
+                }
+            } else {
+                sleep(1);
+                bus = init_dbus();
+            }
         }
     }
 
     syslog(LOG_INFO, "Yoga Book power daemon terminating cleanly.");
+    if (bus) {
+        sd_bus_close(bus);
+        sd_bus_unref(bus);
+    }
     closelog();
     return 0;
 }

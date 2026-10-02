@@ -148,6 +148,12 @@ yogabook-config/
   - **Emergency Cut-off**: Gracefully shuts down the system (`systemctl poweroff` with pre-sync) at $\le 2\%$ or cell voltage $\le 3.15\text{V}$, preventing abrupt PMIC UVLO trips, display inverter flicker, and eMMC flash corruption.
   - Automatically signals Waybar (`pkill -RTMIN+8 waybar`) on charge state and capacity changes.
 
+### 8. Browser & Hardware Acceleration Stack (`config/brave-flags.conf`)
+- **Intel Cherryview Video Decoding**: VA-API (`i965` driver) supports H.264, VP8, and HEVC 8-bit in hardware, but completely lacks VP9 and AV1.
+- **User Environment Note**: The user has already installed the `enhanced-h264ify` extension (blocking VP9/AV1 to enforce hardware H.264 up to 1080p60) and disabled built-in browser bloat (Brave Rewards, Wallet, VPN). **Do not re-propose or instruct the user to install enhanced-h264ify or remove bloat.**
+- **eMMC I/O Optimization**: Brave disk cache is directed to tmpfs on ZRAM (`--disk-cache-dir=/run/user/1000/brave-cache`, size capped at 128MB) to eliminate random 4K write stalls on eMMC and extend flash lifespan.
+- **GPU Acceleration**: Configured with `--enable-gpu-rasterization`, `--enable-zero-copy`, `--canvas-oop-rasterization`, and `--enable-gpu-memory-buffer-video-frames`.
+
 ---
 
 ## 🤖 Instructions for AI Agents

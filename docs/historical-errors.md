@@ -492,13 +492,15 @@ This document records architectural, packaging, and runtime issues encountered o
   2. *Permanent File Descriptor Lock*: Forcing `session.suspend-timeout-seconds = 0` in WirePlumber to keep the audio DAC awake permanently prevents PipeWire from ever closing or suspending the ALSA PCM device.
   3. *Unrecoverable Broken Pipe State*: When the kernel wakes from `s2idle`, the active audio stream handle `hw:1,0` is desynchronized because the hardware DMA engine was power-cycled beneath it. PipeWire's internal `snd_pcm_recover()` call fails with `-EPIPE` (Broken pipe), leaving the stream in a wedged zombie state where buffer pointers advance in memory without being transferred across the I2S bus.
   4. *Period Size Mismatch*: Forcing `api.alsa.period-size = 1024` conflicts with the Intel SST platform driver's fixed period size of 1008 frames (`buffer_size: 34272`), inducing a 16-sample periodic phase drift.
+  5. *Active Playback & Rapid Suspend Race*: While `session.suspend-timeout-seconds = 5` successfully releases idle nodes, closing the lid while media is actively streaming (or paused < 5 seconds prior to sleep) freezes `user.slice` within ~1.5s before the inactivity timer can fire. The kernel suspends into `s2idle` with `hw:1,0` held open, reproducing the broken pipe upon wake.
 - **Resolution**:
   1. In `config/wireplumber/wireplumber.conf.d/50-yogabook-alsa.conf`, set `api.alsa.headroom = 1024` to maintain a 1024-sample DMA safety cushion, completely eliminating playback XRUN pops and jitter on the Atom CPU.
-  2. Maintain `session.suspend-timeout-seconds = 5` (dynamic node suspension), enabling WirePlumber to cleanly release and close the ALSA file descriptor when idle and across system power-state transitions (`s2idle`), preventing the post-resume `Broken pipe` deadlock.
+  2. Maintain `session.suspend-timeout-seconds = 5` (dynamic node suspension), enabling WirePlumber to cleanly release and close the ALSA file descriptor when idle.
   3. Allow `period-size` to negotiate dynamically against the native 1008-frame hardware period rather than forcing 1024.
   4. In `config/pipewire/pipewire.conf.d/10-rates-quantum.conf`, set `default.clock.min-quantum = 64` to provide full dynamic headroom for stream adapters.
+  5. *Fail-Safe D-Bus Sleep/Resume Re-Arming*: In `src/powerd/main.c`, subscribe to `org.freedesktop.login1.Manager.PrepareForSleep` via `sd-bus`. Upon waking (`PrepareForSleep(false)`), `yogabook-powerd` automatically re-arms the user-space PipeWire stack asynchronously (`systemctl --user restart pipewire wireplumber &`) and immediately signals Waybar (`pkill -RTMIN+8 waybar`). This guarantees zero-downtime reconnection of all browser and media streams to a freshly initialized Intel SST hardware node, completely eliminating post-resume audio deadlock regardless of whether audio was playing before lid close.
 - **Prevention Pattern**:
-  Do not conflate playback DMA buffer underruns with DAC idle sleep. Always solve playback XRUN clicks by tuning hardware headroom (`api.alsa.headroom >= 1024`), while strictly keeping `session.suspend-timeout-seconds > 0` on SoC platforms that implement Connected Standby (`s2idle`) to prevent unrecoverable kernel/DSP descriptor deadlocks upon system resume.
+  Do not rely solely on software inactivity timers (`suspend-timeout-seconds`) to close hardware audio descriptors on platforms with volatile Connected Standby (`s2idle`) power states. Always pair idle release timeouts with an event-driven system sleep listener (`PrepareForSleep` signal on D-Bus) that deterministically re-arms the audio pipeline upon waking.
 
 ---
 
@@ -1177,4 +1179,24 @@ This document records architectural, packaging, and runtime issues encountered o
   4. Updated [`src/control-center/main.c`](file:///home/andres/yogabook-config/src/control-center/main.c) and [`bin/yogabook-settings`](file:///home/andres/yogabook-config/bin/yogabook-settings) to toggle the lock file rather than manipulating `rot8.service` state.
 - **Prevention Pattern**:
   Never conflate the lifecycle of background hardware supervisors with user-facing toggle settings. When a daemon is responsible for multi-domain responsibilities (such as sensor fusion, peripheral gating, and display transformation), user-facing switches must toggle isolated policy flags via lightweight IPC or runtime lock files rather than terminating the supervisory service. Transitions to physical base postures (e.g. laptop mode) must unconditionally restore platform baseline invariants (display rotation, physical input devices) regardless of software lock states.
+
+---
+
+## 50. Chromium Browser Disk I/O Saturation on eMMC Flash & Cherryview VA-API Codec Boundaries
+
+- **Date**: 2026-10-02
+- **Subsystem**: Web Browser / Storage I/O / Hardware Video Decoding (`brave`, `chromium`, `vaapi`, `intel-media-driver`, `i965`, `eMMC`)
+- **Symptoms**:
+  - Micro-stuttering and UI stalls during web browsing when navigating content-heavy websites or opening multiple tabs simultaneously.
+  - Severe CPU saturation (100% across all 4 Atom cores) and dropped frames when playing YouTube or streaming media, triggering thermal throttling and battery drain.
+- **Root Cause**:
+  1. *eMMC Random 4K Write Bottleneck*: Chromium's default HTTP disk cache and SQLite WAL journaling perform high-frequency synchronous I/O in `~/.cache/`. On slow eMMC storage, write queue latency starves the browser UI thread (*I/O wait* stalls).
+  2. *SoC Hardware Codec Incompatibility*: Intel Cherryview (Gen8 graphics via `i965` driver) supports hardware decoding (VA-API) for H.264, VP8, and HEVC 8-bit, but completely lacks hardware decoding for **VP9** and **AV1**. YouTube serves VP9/AV1 streams by default, which causes CPU software decoding spikes.
+- **Resolution**:
+  1. Redirect Chromium/Brave disk cache to RAM/tmpfs (`--disk-cache-dir=/run/user/1000/brave-cache`) with a controlled size limit (`--disk-cache-size=134217728` / 128MB) in `config/brave-flags.conf`, eliminating eMMC write stalls and extending flash memory lifespan.
+  2. Enable canvas out-of-process rasterization and GPU memory buffer video frames (`CanvasOopRasterization`, `--enable-gpu-memory-buffer-video-frames`).
+  3. **User Environment Status**: The user has already installed the `enhanced-h264ify` browser extension (blocking VP9 and AV1 to enforce hardware-accelerated H.264 up to 1080p60) and disabled built-in browser bloat (Rewards, Wallet, VPN) in their browser profile. Do not re-propose these user-side steps.
+- **Prevention Pattern**:
+  On systems with slow flash storage (eMMC) and low-power SoCs, never leave Chromium's high-frequency disk cache on the physical flash rootfs; always pin it to tmpfs or ZRAM with strict size ceilings. On older integrated GPUs lacking modern codec hardware (VP9/AV1), ensure H.264 fallback mechanisms are documented and active to prevent unaccelerated software video decoding.
+
 

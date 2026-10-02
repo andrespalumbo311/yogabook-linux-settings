@@ -1,0 +1,15 @@
+# Ananicy rules for Lenovo Yoga Book (MangoWC & Modular Touch Stack)
+
+# MangoWC Compositor (Top priority for fluid 60fps rendering and low input latency)
+{ "name": "mango", "type": "DEWM", "nice": -10, "ioclass": "best-effort", "ionice": 0 }
+
+# Modular Touch Stack components
+{ "name": "waybar", "type": "DEWM", "nice": -4 }
+{ "name": "wvkbd", "type": "DEWM", "nice": -6 }
+{ "name": "yogabook-launcher", "type": "DEWM", "nice": -6 }
+{ "name": "yogabook-control-center", "type": "DEWM", "nice": -6 }
+
+# Hardware Daemons
+{ "name": "yogabook-autorotate", "type": "common-utility", "nice": -5 }
+{ "name": "yogabook-autobrightness", "type": "service", "nice": 2 }
+{ "name": "yogabook-powerd", "type": "service", "nice": 2 }
