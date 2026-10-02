@@ -327,6 +327,14 @@ kbd_unpress_key(struct kbd *kb, uint32_t time)
             }
         }
 
+        if (kb->last_press->code_mod) {
+            uint32_t ephem_mods = kb->last_press->code_mod & ~kb->mods;
+            if (ephem_mods) {
+                zwp_virtual_keyboard_v1_key_mods(kb->vkbd, time, ephem_mods, WL_KEYBOARD_KEY_STATE_RELEASED);
+                zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods, 0, 0, 0);
+            }
+        }
+
         if (unlatch_shift) {
             if (kb->debug) fprintf(stderr, "unlatch shift");
             kb->mods ^= Shift;
@@ -446,7 +454,7 @@ kbd_press_key(struct kbd *kb, struct key *k, uint32_t time)
                                                   0);
             } else {
                 zwp_virtual_keyboard_v1_modifiers(
-                    kb->vkbd, kb->mods ^ k->code_mod, 0, 0, 0);
+                    kb->vkbd, kb->mods | k->code_mod, 0, 0, 0);
             }
         } else {
             zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods, 0, 0, 0);

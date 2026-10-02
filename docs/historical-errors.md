@@ -1199,4 +1199,26 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   On systems with slow flash storage (eMMC) and low-power SoCs, never leave Chromium's high-frequency disk cache on the physical flash rootfs; always pin it to tmpfs or ZRAM with strict size ceilings. On older integrated GPUs lacking modern codec hardware (VP9/AV1), ensure H.264 fallback mechanisms are documented and active to prevent unaccelerated software video decoding.
 
+---
+
+## 51. Dynamic Keymap Recompilation Collision in Wayland Virtual Keyboards (`wvkbd`, `zwp_virtual_keyboard_v1`, `XKB_KEY_Menu`, `KEY_COMPOSE`)
+
+- **Date**: 2026-10-02
+- **Subsystem**: Virtual Touch Keyboard / Input Method / Wayland Protocol (`wvkbd`, `MangoWC`, `wlroots`, `Brave`, `Chromium`, `GTK`)
+- **Symptoms**:
+  - Tapping the question mark key (`?`) immediately following a word without an intervening space erases or replaces the last typed word.
+  - Tapping `?` preceded by a space leaves the word intact but triggers an unexpected right-click context menu over the text field.
+- **Root Cause**:
+  1. *Unrealistic Keymap Re-upload Assumption*: Upstream `wvkbd` implemented a `Copy` mechanism to emit Unicode codepoints by dynamically re-uploading an XKB keymap (`zwp_virtual_keyboard_v1_keymap`) with `<COMP>` mapped to the Unicode codepoint, immediately followed by emitting Linux evdev scancode 127 (`KEY_COMPOSE`).
+  2. *Asynchronous Client Keymap State in Wayland*: Neither Wayland compositors (MangoWC/wlroots) nor client toolkits (Chromium/Brave, GTK) support synchronous, per-keystroke dynamic XKB re-parsing. The client interprets scancode 127 using the static seat keymap (`us(intl)`).
+  3. *Context Menu Key Collision (`<COMP>` -> `<MENU>`)*: In standard XKB tables, scancode 127 maps to keycode 135 (`Menu` / application context menu). In text input fields, pressing `Menu` immediately adjacent to a word triggers spellcheck context actions, selecting the active word; upon release or subsequent key events, the selected word is erased or overwritten. Preceded by whitespace, the caret is outside word boundaries, so the `Menu` key simply pops up the right-click context menu.
+  4. *Missing Ephemeral Modifier Unlatching*: In `wvkbd`, `kbd_unpress_key()` did not release ephemeral modifiers (`k->code_mod`) applied during `kbd_press_key()`, preventing clean use of native `Code` with `code_mod = Shift`.
+- **Resolution**:
+  1. Updated `kbd_unpress_key()` in [`src/wvkbd/keyboard.c`](file:///home/andres/yogabook-config/src/wvkbd/keyboard.c) to calculate unlatched ephemeral modifiers (`uint32_t ephem_mods = kb->last_press->code_mod & ~kb->mods`) and release them cleanly via `zwp_virtual_keyboard_v1_key_mods(..., ephem_mods, WL_KEYBOARD_KEY_STATE_RELEASED)` and `zwp_virtual_keyboard_v1_modifiers(..., kb->mods, 0, 0, 0)`.
+  2. Converted `?` and standard ASCII symbols in [`src/wvkbd/layout.yogabook.h`](file:///home/andres/yogabook-config/src/wvkbd/layout.yogabook.h) (`!`, `"`, `:`, `@`, `#`, `$`, `%`, `&`, `*`, `(`, `)`, `{`, `}`, `<`, `>`, `_`, `~`, `|`) from `Copy` to native `Code` with `.code_mod = Shift` (e.g. `Code, KEY_SLASH, .code_mod = Shift`).
+  3. Recompiled `bin/wvkbd` and restarted `wvkbd.service`.
+- **Prevention Pattern**:
+  Never rely on runtime dynamic keymap uploads over `zwp_virtual_keyboard_v1` for typing standard keyboard characters or symbols. In Wayland, always map symbols available within standard layout modifier levels (e.g. shifted keys) directly to their native scancodes and modifier masks. When designing virtual keyboards, ensure modifier state machines cleanly unlatch ephemeral per-key modifiers upon key release without mutating sticky or latched modifier masks.
+
+
 
