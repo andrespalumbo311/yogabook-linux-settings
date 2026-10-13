@@ -1213,12 +1213,164 @@ This document records architectural, packaging, and runtime issues encountered o
   2. *Asynchronous Client Keymap State in Wayland*: Neither Wayland compositors (MangoWC/wlroots) nor client toolkits (Chromium/Brave, GTK) support synchronous, per-keystroke dynamic XKB re-parsing. The client interprets scancode 127 using the static seat keymap (`us(intl)`).
   3. *Context Menu Key Collision (`<COMP>` -> `<MENU>`)*: In standard XKB tables, scancode 127 maps to keycode 135 (`Menu` / application context menu). In text input fields, pressing `Menu` immediately adjacent to a word triggers spellcheck context actions, selecting the active word; upon release or subsequent key events, the selected word is erased or overwritten. Preceded by whitespace, the caret is outside word boundaries, so the `Menu` key simply pops up the right-click context menu.
   4. *Missing Ephemeral Modifier Unlatching*: In `wvkbd`, `kbd_unpress_key()` did not release ephemeral modifiers (`k->code_mod`) applied during `kbd_press_key()`, preventing clean use of native `Code` with `code_mod = Shift`.
+  5. *Internal Latin Keymap Inversion*: In `src/wvkbd/keymap.mobintl.h`, `<AB10>` (`KEY_SLASH`) was mapped to `[ slash, greater ]` while `question` was placed on `<AB09>` (`KEY_DOT`), causing shifted `KEY_SLASH` to emit `>` rather than `?`.
+  6. *Incomplete Elimination of Copy Scancode 127*: Italian accented vowels (`à`, `è`, `é`, `ì`, `ò`, `ù`), currency symbols (`€`), and punctuation (`°`, `§`, `£`, `«`, `»`) still retained `Copy`, continuously emitting scancode 127 (`KEY_COMPOSE` -> `<MENU>`).
+  7. *Display Transform Geometry Mismatch*: On rotated displays (`transform 270`), layer-shell configure queries reported unrotated dimensions (800x1280), falsely evaluating `available_width > available_height` as false and restricting keyboard width to 800px instead of 1280px landscape, misaligning touch hit-boxes on the right perimeter.
 - **Resolution**:
   1. Updated `kbd_unpress_key()` in [`src/wvkbd/keyboard.c`](file:///home/andres/yogabook-config/src/wvkbd/keyboard.c) to calculate unlatched ephemeral modifiers (`uint32_t ephem_mods = kb->last_press->code_mod & ~kb->mods`) and release them cleanly via `zwp_virtual_keyboard_v1_key_mods(..., ephem_mods, WL_KEYBOARD_KEY_STATE_RELEASED)` and `zwp_virtual_keyboard_v1_modifiers(..., kb->mods, 0, 0, 0)`.
-  2. Converted `?` and standard ASCII symbols in [`src/wvkbd/layout.yogabook.h`](file:///home/andres/yogabook-config/src/wvkbd/layout.yogabook.h) (`!`, `"`, `:`, `@`, `#`, `$`, `%`, `&`, `*`, `(`, `)`, `{`, `}`, `<`, `>`, `_`, `~`, `|`) from `Copy` to native `Code` with `.code_mod = Shift` (e.g. `Code, KEY_SLASH, .code_mod = Shift`).
-  3. Recompiled `bin/wvkbd` and restarted `wvkbd.service`.
+  2. Fixed `<AB10>` in [`src/wvkbd/keymap.mobintl.h`](file:///home/andres/yogabook-config/src/wvkbd/keymap.mobintl.h) to `[ slash, question ]` and `<AB09>` to `[ period, greater ]`.
+  3. Decoupled `<COMP>` in `keymap.mobintl.h` from keycode 135 (`<MENU>`) to safe unassigned keycode 248 (scancode 240) and removed `<MENU>` aliases.
+  4. Introduced `DeadCombo` key type in [`src/wvkbd/keyboard.h`](file:///home/andres/yogabook-config/src/wvkbd/keyboard.h) and [`src/wvkbd/keyboard.c`](file:///home/andres/yogabook-config/src/wvkbd/keyboard.c) to emit native dead-key sequences (`KEY_GRAVE` / `KEY_APOSTROPHE` followed by target vowel) for all accented characters (`à`, `è`, `é`, `ì`, `ò`, `ù`, `ç`, `À`, `È`, etc.) without touching dynamic keymaps or scancode 127.
+  5. Converted `?` and standard ASCII/extended symbols in [`src/wvkbd/layout.yogabook.h`](file:///home/andres/yogabook-config/src/wvkbd/layout.yogabook.h) (`€`, `°`, `§`, `£`, `±`, `«`, `»`, `!`, `"`, `:`, `@`, `#`, `$`, `%`, `&`, `*`, `(`, `)`, `{`, `}`, `<`, `>`, `_`, `~`, `|`) to native `Code` with `Shift` or `AltGr`.
+  6. Enhanced `redimension_keyboard()` in [`src/wvkbd/main.c`](file:///home/andres/yogabook-config/src/wvkbd/main.c) with `is_system_landscape()` querying `/run/user/<uid>/yogabook-rotation.state` to guarantee 1280px landscape width regardless of unrotated layer-shell query reports.
+  7. Recompiled `bin/wvkbd` with `-O2` and restarted `wvkbd.service`.
 - **Prevention Pattern**:
-  Never rely on runtime dynamic keymap uploads over `zwp_virtual_keyboard_v1` for typing standard keyboard characters or symbols. In Wayland, always map symbols available within standard layout modifier levels (e.g. shifted keys) directly to their native scancodes and modifier masks. When designing virtual keyboards, ensure modifier state machines cleanly unlatch ephemeral per-key modifiers upon key release without mutating sticky or latched modifier masks.
+  Never rely on runtime dynamic keymap uploads over `zwp_virtual_keyboard_v1` for typing standard keyboard characters or symbols. In Wayland, always map symbols available within standard layout modifier levels (e.g. shifted keys) directly to their native scancodes and modifier masks. For accented characters on minimal virtual keyboards, emit native dead-key sequences rather than simulating Menu/Compose scancodes. On rotated displays, query physical rotation state files rather than trusting raw layer-shell dimensions to size touch bounding boxes accurately.
+
+---
+
+## 52. Wacom EMR Create Pad Orientation Mismatch in Minimal Wayland Compositors
+
+- **Date**: 2026-10-06
+- **Subsystem**: Input Subsystem / Digitizer / Compositor Hook (`wlroots`, `MangoWC`, `libinput`, `wacom_fix.so`, `Wacom HID 169 Pen`)
+- **Symptoms**:
+  - Drawing or pointing with the pen on the Wacom Create Pad produces an inverted or rotated cursor trajectory relative to the screen (e.g. placing the pen at the bottom of the pad near the spacebar moves the cursor to the top of the display near the hinge, or axes are swapped).
+  - Setting `LIBINPUT_CALIBRATION_MATRIX` in udev has zero effect on tablet pen tool movements.
+  - MangoWC emits parser errors if using unsupported keywords: `[ERROR]: Unknown keyword: tablet_map_to_mon`.
+- **Root Cause**:
+  1. *Libinput Tablet Tool Calibration Bypass*: In `libinput.so.10`, `libinput_event_tablet_tool_get_x_transformed()` normalizes raw tablet coordinates directly ($(x_{raw} - min) \cdot width / (max - min + 1)$) without multiplying by the device calibration matrix. By design, libinput only applies `LIBINPUT_CALIBRATION_MATRIX` to touchscreens (`ID_INPUT_TOUCHSCREEN`), delegating tablet orientation entirely to the Wayland compositor.
+  2. *Wlroots Tablet Tool Linear Scaling Without Output Transform*: In wlroots (`wlr_cursor_absolute_to_layout_coords`), absolute coordinates in $[0.0, 1.0]$ are mapped linearly to layout box dimensions ($lx = box.x + x \cdot box.width$, $ly = box.y + y \cdot box.height$) without rotating coordinates to match the output's display transform (`transform 270`).
+  3. *Hardware Orientation Mismatch*: The physical digitizer (`Wacom HID 169 Pen`) is mounted in portrait inside the keyboard base. Hardware short axis `ABS_X` (0 at spacebar, 1 at hinge) corresponds to screen vertical $Y$, while long axis `ABS_Y` (0 at Esc/left, 1 at Enter/right) corresponds to screen horizontal $X$. In landscape (transform 270), the required mapping is $x' = y_{raw}$ and $y' = 1.0 - x_{raw}$.
+- **Resolution**:
+  1. Implemented a zero-overhead, Native C shared library hook [`system/wacom_fix/wacom_fix.c`](file:///home/andres/yogabook-config/system/wacom_fix/wacom_fix.c) compiled to `/usr/lib/wacom_fix.so` and registered in `/etc/ld.so.preload`.
+  2. The hook intercepts `wlr_cursor_warp_absolute(cur, dev, x, y)`. When `dev` matches the Wacom digitizer, it applies the invariant mechanical mapping:
+     $$x' = y_{raw}, \quad y' = 1.0 - x_{raw}$$
+     Because the Create Pad is physically joined to the display via the hinge, their relative orientation frame is invariant regardless of device posture or rotation. Non-Wacom devices pass through unmodified.
+  3. Configured `devicerule=name:Wacom HID 169 Pen,monitor:DSI-1` in [`config/mango/config.conf`](file:///home/andres/yogabook-config/config/mango/config.conf) for native output containment.
+- **Prevention Pattern**:
+  Never assume Wayland compositors automatically rotate tablet input devices to match transformed outputs or that libinput calibration matrices apply to tablet tools. When compositors lack internal tablet rotation options, intercept `wlr_cursor_warp_absolute` via a lightweight C dynamic preload hook that checks device identity and transforms normalized coordinates before layout mapping.
+
+---
+
+## 53. Unhandled Transient States & Hardcoded Interface Name Fallback in Waybar Network Module
+
+- **Date**: 2026-10-07
+- **Subsystem**: Status Bar / Network Subsystem / Netlink Protocol (`Waybar`, `network.cpp`, `iwd`, `systemd-networkd`, `brcmfmac`)
+- **Symptoms**:
+  - Waybar intermittently displays raw text like `wlan0` instead of the expected Wi-Fi icon in the top panel.
+  - The behavior triggers frequently after resuming from sleep/suspend (`s2idle`), during transient Wi-Fi re-authentications, or when DHCP IP leases renew.
+- **Root Cause**:
+  1. *Hardcoded Default Format Fallback*: In Waybar's network module (`src/modules/network.cpp`), `DEFAULT_FORMAT` is hardcoded as `"{ifname}"`. When the internal state machine resolves an interface state that lacks an explicit `format-<state>` definition and no generic `"format"` fallback is provided, it defaults to printing the interface name (e.g. `wlan0`).
+  2. *Transient State Gap*: Waybar defines distinct states: `"wifi"`, `"ethernet"`, `"linked"` (carrier is UP but IP address is unassigned), `"disconnected"` (no carrier), and `"disabled"` (RFKILL blocked). Omitting `format-linked`, `format-disabled`, and `"format"` causes Waybar to drop to `"{ifname}"` during any DHCP negotiation or connection transition.
+  3. *Unbound Interface Route Sniffing*: When `"interface"` is omitted, Waybar dynamically traces the kernel's default route table via Netlink. Route changes (or coexistence with VPN interfaces like `tailscale0`) trigger `clearIface()`, forcing the module through asynchronous re-detection cycles where carrier precedes IP assignment.
+  4. *Conservative Update Interval*: Without an explicit `"interval"`, Waybar defaults to a 60-second polling cycle, leaving stale fallback strings displayed long after connection handshakes finalize.
+- **Resolution**:
+  1. Explicitly declare `"interface": "wlan0"` and `"interval": 5` in the Waybar configuration.
+  2. Define a global `"format": "{icon}"` fallback alongside comprehensive state coverage (`format-wifi`, `format-linked`, `format-disconnected`, `format-disabled`).
+  3. Provide matching tooltip formats and style context colors for `.linked` (amber) and `.disabled` (muted gray) in `style.css`.
+- **Prevention Pattern**:
+  In Waybar status bar modules with state machines (e.g. network, battery), always declare both a global `"format"` safety fallback and specific format handlers for all intermediate/transient states (`linked`, `disabled`, `warning`, etc.). Never leave interface detection unbound when a single primary network device is designated.
+
+---
+
+## 54. Partial Axis NAN Bypass in Wlroots Absolute Cursor Warp Interceptors (Low-Velocity Pen Jitter & Orthogonal Streaks)
+
+- **Date**: 2026-10-07
+- **Subsystem**: Input Subsystem / Digitizer / Compositor Hook (`wlroots`, `MangoWC`, `wacom_fix.so`, `Wacom HID 169 Pen`, `Xournal++`)
+- **Symptoms**:
+  - Drawing rapid strokes on the Wacom Create Pad in drawing apps (like Xournal++) works correctly and tracks the pen accurately.
+  - Drawing slow strokes (e.g. slowly tracing a horizontal line) causes the cursor to violently flutter and draw the intended line accompanied by dense, vertical comb-like streaks downwards.
+- **Root Cause**:
+  1. *Wlroots Partial-Axis Semantics*: In wlroots and compositors like MangoWC (`tablettoolaxis` / `tablettoolmotion`), when the digitizer hardware reports movement primarily along one axis, the unchanged axis is passed as `NAN` to `wlr_cursor_warp_absolute(cur, dev, change_x ? x : NAN, change_y ? y : NAN)`. Per wlroots design, an argument of `NAN` signals the compositor to leave that specific coordinate axis untouched in screen layout space.
+  2. *Naive `isnan()` Guard in Coordinate Transform*: The interceptor hook `wacom_fix.c` initially checked `if (!is_wacom_device(dev) || isnan(x) || isnan(y))`. Because slow movement frequently produces packets where only one coordinate changes while the other is `NAN`, the `|| isnan` condition evaluated to true.
+  3. *Unrotated Fallback to Inverted Axes*: Skipping the rotation matrix passed the raw hardware coordinate and `NAN` directly to wlroots. In landscape 270°, hardware $Y$ represents screen $X$, but wlroots interpreted the second argument $y$ as unrotated screen $Y$, pulling the cursor downwards perpendicular to the stroke. Once both axes updated in subsequent packets, the cursor snapped back, generating high-frequency orthogonal spikes.
+- **Resolution**:
+  1. Updated [`system/wacom_fix/wacom_fix.c`](file:///home/andres/yogabook-config/system/wacom_fix/wacom_fix.c) to only bypass warping if both axes are `NAN` (`isnan(x) && isnan(y)`).
+  2. Decoupled axis transformations so each coordinate preserves its own `NAN` state:
+     $$nx = \text{isnan}(y) \;?\; \text{NAN} : y, \quad ny = \text{isnan}(x) \;?\; \text{NAN} : (1.0 - x)$$
+  3. Clamped coordinates to $[0.0, 1.0]$ exclusively when not `NAN`.
+  4. Recompiled with `make` and installed to `/usr/lib/wacom_fix.so`.
+- **Prevention Pattern**:
+  In wlroots and Wayland input interceptors, never treat `NAN` as an error or invalid coordinate that invalidates the entire event. `NAN` is the formal protocol mechanism to convey partial axis updates. Any geometric coordinate rotation hook must transform each axis independently, mapping hardware input axes to their rotated screen counterparts while propagating `NAN` to the appropriate output dimension.
+
+---
+
+## 55. Intel Cherryview SoC Hard Lockup on Hardware Framebuffer Compression (FBC) & Mesa Vulkan HasVK Probing
+
+- **Date**: 2026-10-08
+- **Subsystem**: Graphics Subsystem / DRM Kernel Driver / Web Browser (`i915`, `fbc`, `brave`, `vulkan_hasvk`, `cht-yogabook`)
+- **Symptoms**:
+  - Complete, unrecoverable system freeze (hard lockup) during media or YouTube video playback under Wayland.
+  - The display image freezes instantly, input events (touch, keyboard, power button short press) cease responding, and audio drops into an endless 1-second cyclic DMA ring buffer loop.
+  - Forced shutdown via 10-second power button press required; no Kernel Panic, Oops, or coredump logged to disk (`journalctl` stops abruptly).
+  - Prior to the lockup, kernel logs exhibit recurring display pipe update errors:
+    ```text
+    i915 0000:00:02.0: [drm] *ERROR* Atomic update failure on pipe A ... scanline start 1907, end 1922
+    ```
+    alongside browser warnings from Mesa:
+    ```text
+    MESA-INTEL: warning: .../vulkan_hasvk/anv_device.c: The kernel reported a GTT size larger than 2 GiB but not support for 48-bit addresses
+    ```
+- **Root Cause**:
+  1. *Hardware FBC Limitations on Intel Gen8 Cherryview*: Framebuffer Compression (`i915.enable_fbc=1`) was manually enabled for theoretical LPDDR3 bus power savings. However, on Intel Atom Cherry Trail (Gen8 Cherryview), the FBC hardware block cannot sustain realtime compression/decompression deadlines when combined with rotated display scanout (`transform 270`), 60fps dynamic video frames, and VA-API/zero-copy rendering. The display engine repeatedly misses VBLANK deadlines (`Atomic update failure on pipe A`), ultimately causing an unhandled FIFO underrun that deadlocks the shared Uncore/IOSF memory arbiter between CPU and GPU.
+  2. *Audio DMA Cyclic Ring Buffer Loop Mechanics*: The Intel SST DSP (`cht-yogabook` / ALC5645) operates via autonomous cyclic DMA transfers. When the shared memory fabric locks up, the CPU immediately ceases instruction execution and interrupt handling, leaving the audio controller continually repeating the buffered ~1-second PCM loop to the DAC without software intervention.
+  3. *Unconstrained Vulkan HasVK Probing*: Although `--disable-features=Vulkan` was present in `brave-flags.conf`, Chromium/Brave still loaded and probed Mesa's legacy `vulkan_hasvk` driver for WebGPU/ANGLE initialization. On Cherryview, this driver contains severe GTT address boundary bugs that trigger GPU command ring stalls.
+- **Resolution**:
+  1. Permanently disable Framebuffer Compression in `system/etc/modprobe.d/i915.conf` (`options i915 enable_fbc=0`) and remove `i915.enable_fbc=1` from `/boot/loader/entries/*.conf` in favor of `i915.enable_fbc=0`.
+  2. Update [`install.sh`](file:///home/andres/yogabook-config/install.sh) to automate setting `i915.enable_fbc=0` across all boot entries during system updates.
+  3. Append `--disable-vulkan` to [`config/brave-flags.conf`](file:///home/andres/yogabook-config/config/brave-flags.conf) to completely block Chromium from loading or probing `vulkan_hasvk`, allowing ANGLE and `VaapiVideoDecodeLinuxGL` to operate with full hardware acceleration. (Note: Avoid deprecated `--use-gl=egl`, which Chromium rejects, causing fallback to software rendering).
+- **Prevention Pattern**:
+  On legacy low-power SoCs with shared memory fabrics (Intel Atom Cherryview/Bay Trail), never enable experimental or non-default power-saving DRM features (such as FBC) on rotated displays with hardware video decoding. Always enforce explicit browser flags (`--disable-vulkan`) rather than feature toggles alone to prevent background probing of unstable legacy Vulkan ICDs, while preserving Chromium's default ANGLE backend to ensure hardware acceleration remains fully functional.
 
 
+---
 
+## 56. BlueZ Device Connection State Desynchronization and Statically Locked Audio Routing in Touch Settings Panels
+
+- **Date**: 2026-10-09
+- **Subsystem**: Bluetooth / BlueZ / PipeWire / WirePlumber / Touch Settings UI (`bluez5`, `wireplumber`, `yogabook-settings`)
+- **Symptoms**:
+  - Connecting Bluetooth headphones (such as AirPods) from the custom settings application appears to fail: the action button reverts to "Connetti", the status remains "Accoppiato", and no persistent visual feedback confirms the connection.
+  - Sound continues to play exclusively through internal laptop speakers despite `bluetoothctl info` showing `Connected: yes` and PipeWire listing the Bluetooth audio sink.
+  - Users are unable to disconnect the peripheral without completely removing/forgetting the device pairing.
+- **Root Cause**:
+  1. *Naive Device Status Query in UI Layer*: The settings daemon only enumerated `bluetoothctl devices Paired` and all discovered devices, omitting `bluetoothctl devices Connected`. Devices already connected were identified strictly as "paired", perpetually rendering the "Connetti" action button without displaying active connection status or exposing a "Disconnetti" handler.
+  2. *WirePlumber Statically Configured Default Sink Lock*: When an internal speaker DSP filter chain (`effect_input.yogabook_dsp`) is recorded as the explicit default sink in `~/.local/state/wireplumber/default-nodes`, WirePlumber treats this stored configuration with absolute priority over dynamically appearing Bluetooth endpoints (`priority.session = 1010`).
+  3. *Absence of Explicit Sink Switching in UI and Connection Handlers*: The settings application lacked a sink destination selector in its audio panel and did not trigger `wpctl set-default <id>` upon successful Bluetooth connection.
+- **Resolution**:
+  1. Updated [`bin/yogabook-settings`](file:///home/andres/yogabook-config/bin/yogabook-settings) to query both `bluetoothctl devices Paired` and `bluetoothctl devices Trusted` (ensuring modern audio accessories without legacy bonding appear as saved devices with "Connetti" / "Disconnetti" controls), alongside `bluetoothctl devices Connected` for live status.
+  2. Implemented a dedicated Native C background daemon ([`src/helpers/yogabook-bt-audio-watcher.c`](file:///home/andres/yogabook-config/src/helpers/yogabook-bt-audio-watcher.c) -> [`bin/yogabook-bt-audio-watcher`](file:///home/andres/yogabook-config/bin/yogabook-bt-audio-watcher), resident RAM ~1.5 MB, 0.0% CPU) hooked directly to PipeWire registry events (`PW_VERSION_REGISTRY_EVENTS`). The watcher detects the creation of ANY audio sink (`media.class == "Audio/Sink"`) with `device.api == "bluez5"` and immediately switches the default sink to it via `wpctl set-default <id>`. Upon peripheral disconnection, it automatically and instantaneously falls back to `effect_input.yogabook_dsp` (or ALSA analog output).
+  3. Integrated `yogabook-bt-audio.service` into user systemd units (`config/systemd/user/yogabook-bt-audio.service`) bound to `mango-session.target`.
+  4. Avoided writing forced internal sink defaults to `default-nodes` on disconnect, preserving user preference hierarchy.
+  5. Added an interactive output sink selector (`Adw.ComboRow`) to the "Audio e Suono" settings page, dynamically populating available PipeWire sinks (Internal DSP Speakers vs. Bluetooth Headphones) and updating volume controls and channel muting in real time.
+  6. Implemented a non-blocking 3-second periodic polling timer (`GLib.timeout_add_seconds(3, ...)`) in `bin/yogabook-settings` with tuple-based state diffing (`_last_bt_devices_state`) that dynamically updates the connection indicators (`● Connesso` / "Disconnetti") without reconstructing GTK widgets or causing visual flicker.
+  7. Configured `AlwaysPairable = true`, `PairableTimeout = 0`, `JustWorksRepairing = always`, and `FastConnectable = true` in `/etc/bluetooth/main.conf` to guarantee seamless background pairing and SSP key renewals on minimal window managers lacking monolithic desktop agents.
+- **Prevention Pattern**:
+  In custom desktop management tools and settings interfaces:
+  1. Always recognize both `Paired` and `Trusted` BlueZ properties to support devices that authenticate without storing classical pairing bonds.
+  2. Rather than relying on WirePlumber's static priority heuristics (which can lock default sinks to internal hardware), deploy a lightweight native C PipeWire registry listener to dynamically and universally route audio to any newly connected Bluetooth sink in <1ms and restore internal DSP speakers upon disconnection.
+  3. Never force fallback sinks into persistent session metadata on device disconnection, as this creates a static priority lock that breaks automatic routing on future reconnects.
+  4. Always enable `AlwaysPairable` and `JustWorksRepairing = always` in BlueZ configuration when operating on standalone Wayland compositors to prevent SSP Just-Works pairing deadlocks.
+  5. Implement periodic polling with state diffing in custom settings GUIs to synchronize peripheral connection status live without causing widget churn or flickering.
+
+---
+
+## 46. Netlink Address Desynchronization in Status Bars After Standby (`s2idle`) & Native C Wi-Fi Provider
+
+- **Date**: 2026-10-13
+- **Subsystem**: Status Bar / Network Subsystem / Wayland Desktop Shell (`Waybar`, `iwd`, `systemd-networkd`, `brcmfmac`)
+- **Symptoms**:
+  - The Wi-Fi icon in the top status bar unexpectedly turns yellow/amber displaying a warning glyph with an exclamation mark (`󰤩`) or intermittently displays an Ethernet cable icon (`󰈀`).
+  - Hovering or inspecting the tooltip reports `wlan0 (In connessione...)` despite the network connection, DNS, and Internet access being 100% active and healthy.
+  - The issue recurs frequently after waking the device from sleep (`s2idle`) or during quick Wi-Fi AP re-associations.
+- **Root Cause**:
+  1. *Waybar Netlink Event-Driven Address Tracking Flaw*: In Waybar's built-in `network` module (`src/modules/network.cpp`), interface IP addresses are tracked strictly via asynchronous Netlink socket events (`RTM_NEWADDR` / `RTM_DELADDR`). The periodic timer thread (`getInfo()`) only issues `nl80211` wireless scans and never re-dumps IP addresses.
+  2. *Standby Address Loss & Missed Re-Advertisement*: Upon resuming from suspend, fast AP re-association (`iwd`) and network configuration (`systemd-networkd`) generate route/carrier bounce events that trigger `ipaddr_.clear()`. Because DHCP lease was maintained without requesting a new lease, the kernel does not emit a fresh `RTM_NEWADDR`.
+  3. *Erroneous Fallback State Cascades*: When `carrier == true` but `ipaddr_` is empty, Waybar falls back to `"linked"`, which was configured to display `format-linked` (`󰤩`, alert glyph) styled yellow (`#network.linked { color: #f59e0b; }`). Furthermore, if `brcmfmac` FullMAC firmware drops cached BSS scan data under power-saving, `essid_` becomes empty, triggering `if (essid_.empty()) return "ethernet"`, rendering an Ethernet cable glyph on a tablet lacking an RJ45 port.
+- **Resolution**:
+  1. Developed a dedicated Native C Wi-Fi status provider ([`src/helpers/yogabook-wifi-status.c`](file:///home/andres/yogabook-config/src/helpers/yogabook-wifi-status.c) -> [`bin/yogabook-wifi-status`](file:///home/andres/yogabook-config/bin/yogabook-wifi-status), ~300 KB resident RAM, <0.3ms execution, 0% CPU).
+  2. Direct querying of sysfs rfkill (`/sys/class/rfkill/`) for radio block status, sysfs carrier (`/sys/class/net/wlan0/carrier`), and POSIX `getifaddrs()` for deterministic, instantaneous IPv4 address resolution immune to Netlink socket drops.
+  3. Queried `net.connman.iwd` via `sd-bus` for station state, SSID name, and `StationDiagnostic.GetDiagnostics` (RSSI and frequency).
+  4. Migrated Waybar from `network` to `custom/wifi` ([`config/waybar/config.jsonc`](file:///home/andres/yogabook-config/config/waybar/config.jsonc)), updating [`style.css`](file:///home/andres/yogabook-config/config/waybar/style.css) and hooking `pkill -RTMIN+7 waybar` into [`yogabook-powerd`](file:///home/andres/yogabook-config/src/powerd/main.c) upon sleep resume and into [`yogabook-control-center`](file:///home/andres/yogabook-config/src/control-center/main.c) on quick tile toggle.
+- **Prevention Pattern**:
+  In status bar environments, avoid relying on passive Netlink socket state machines for critical interface connectivity metrics on mobile/convertible devices that frequently suspend and resume. Direct POSIX sysfs and `getifaddrs()` queries provide deterministic, stateless status verification with sub-millisecond overhead.

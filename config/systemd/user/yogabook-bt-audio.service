@@ -1,0 +1,13 @@
+[Unit]
+Description=Yoga Book Bluetooth Audio Auto-Route Daemon
+PartOf=mango-session.target
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/home/andres/.local/bin/yogabook-bt-audio-watcher
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=mango-session.target

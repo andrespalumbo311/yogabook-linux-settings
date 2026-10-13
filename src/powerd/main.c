@@ -57,8 +57,8 @@ static int on_prepare_for_sleep(sd_bus_message *m, void *userdata, sd_bus_error 
         // Non-blocking restart of PipeWire audio stack to clear any broken pipe / stale DMA handle
         int ret = system("systemctl --user restart pipewire wireplumber &");
         (void)ret;
-        // Immediate Waybar battery update
-        ret = system("pkill -RTMIN+8 waybar 2>/dev/null &");
+        // Immediate Waybar battery & wifi update
+        ret = system("pkill -RTMIN+8 waybar 2>/dev/null; pkill -RTMIN+7 waybar 2>/dev/null &");
         (void)ret;
         g_resumed_from_sleep = 1;
     }

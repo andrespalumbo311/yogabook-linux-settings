@@ -559,10 +559,41 @@ im_unavailable(void *data, struct zwp_input_method_v2 *zwp_input_method_v2)
 {
 }
 
+static bool
+is_system_landscape(void)
+{
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    char path[256];
+    if (runtime_dir) {
+        snprintf(path, sizeof(path), "%s/yogabook-rotation.state", runtime_dir);
+    } else {
+        snprintf(path, sizeof(path), "/run/user/%d/yogabook-rotation.state", getuid());
+    }
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char line[64];
+        while (fgets(line, sizeof(line), f)) {
+            if (strncmp(line, "transform=", 10) == 0) {
+                int tr = atoi(line + 10);
+                fclose(f);
+                if (tr == 270 || tr == 90) return true;
+                if (tr == 0 || tr == 180) return false;
+            }
+        }
+        fclose(f);
+    }
+    return available_width > available_height;
+}
+
 void
 redimension_keyboard()
 {
-    keyboard.landscape = available_width > available_height;
+    keyboard.landscape = is_system_landscape();
+    if (keyboard.landscape && available_width < available_height) {
+        uint32_t tmp = available_width;
+        available_width = available_height;
+        available_height = tmp;
+    }
 
     enum layout_id layer;
     if (keyboard.landscape) {

@@ -483,7 +483,7 @@ static gboolean idle_update_wifi(gpointer user_data) {
 
 static void* thread_toggle_wifi(void *arg) {
     (void)arg;
-    system("rfkill toggle wifi >/dev/null 2>&1");
+    system("rfkill toggle wifi >/dev/null 2>&1; pkill -RTMIN+7 waybar 2>/dev/null &");
     g_idle_add(idle_update_wifi, NULL);
     return NULL;
 }

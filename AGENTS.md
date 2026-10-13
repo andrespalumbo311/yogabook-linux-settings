@@ -40,11 +40,13 @@ yogabook-config/
 │   ├── toggle-launcher            # Instant toggle binary for App Launcher (Native C)
 │   ├── yogabook-mako-status       # Real-time Mako notification & DND status provider (Native C)
 │   ├── yogabook-battery-status    # Direct hardware SOC battery status provider for Waybar (Native C)
+│   ├── yogabook-wifi-status       # Direct hardware/iwd Wi-Fi status provider for Waybar (Native C, 300 KB RAM)
 │   ├── yogabook-powerd            # Low-battery alert & anti-brownout protection daemon (Native C, 350 KB RAM)
 │   ├── toggle-keyboard            # Instant toggle binary for wvkbd virtual keyboard (Native C)
 │   ├── close-window               # Safe IPC window close binary for MangoWC (Native C)
 │   ├── ws-status                  # Dynamic workspace status provider for Waybar (Native C)
 │   ├── mango-workspace-watcher    # MangoWC event watcher daemon for Waybar (Native C)
+│   ├── yogabook-bt-audio-watcher  # Universal Bluetooth audio auto-route daemon (Native C, 1.5 MB RAM)
 │   └── wvkbd                      # Native C Touch Virtual Keyboard (custom Yoga Book layout, 1.1 MB RAM)
 │
 ├── src/                           # Native C source trees
@@ -74,6 +76,7 @@ yogabook-config/
 │       └── user/
 │           ├── rot8.service       # User systemd service for yogabook-autorotate
 │           ├── yogabook-autobrightness.service # User systemd service for auto-brightness
+│           ├── yogabook-bt-audio.service       # User systemd service for universal BT audio auto-route
 │           ├── wvkbd.service      # User systemd service for wvkbd (hidden background process)
 │           ├── waybar.service     # User systemd service for Waybar
 │           ├── mako.service       # User systemd service for Mako notification daemon
@@ -82,6 +85,9 @@ yogabook-config/
 └── system/                        # System configurations and low-level fixes (/etc)
     ├── pamac_fix/                 # C source & Makefile for libalpm Landlock sandbox bypass
     │   ├── pamac_fix.c
+    │   └── Makefile
+    ├── wacom_fix/                 # C hook & Makefile for Wacom digitizer coordinate rotation
+    │   ├── wacom_fix.c
     │   └── Makefile
     └── etc/                       # Canonical copies of tuned system files
         ├── fstab                  # Flash eMMC wear & latency optimizations (noatime, commit=60)
@@ -114,10 +120,12 @@ yogabook-config/
 - **Table Flat-Lock**: If screen is tilted $< 53^\circ$ from horizontal ($|z| > 0.60$), orientation freezes completely so resting the device flat on a desk preserves the active orientation.
 - **Halo Keyboard Suppression**: Directly grabs/ungrabs `/dev/input/event*` nodes via `ioctl(EVIOCGRAB)` when opening $\ge 190.0^\circ$.
 
-### 2. Wacom Create Pad Digitizer (`config/mango/config.conf`)
+### 2. Wacom Create Pad Digitizer (`system/wacom_fix/` & `config/mango/config.conf`)
 - Hardware ID: `Wacom HID 169 Pen` (`0018:056A:0169` via `i2c-WCOM0019:00`).
-- The digitizer is physically installed in portrait (1200×1920) matching the display panel.
-- In `config.conf`, `tablet_map_to_mon=DSI-1` maps the digitizer directly to the rotated display, resolving coordinate mismatches.
+- The digitizer is physically installed in portrait (1200×1920) inside the keyboard base.
+- Because `libinput` bypasses calibration matrices for tablet tools and `wlroots` scales tablet coordinates linearly without applying display transforms, orientation is corrected dynamically via `system/wacom_fix/wacom_fix.so` (preloaded via `/etc/ld.so.preload`).
+- The hook intercepts `wlr_cursor_warp_absolute`, queries `/run/user/<uid>/yogabook-rotation.state` (cached with `CLOCK_MONOTONIC_COARSE`), and maps coordinates ($x' = y, y' = 1.0 - x$ for landscape 270) directly into Wayland screen space.
+- Display containment is enforced via `devicerule=name:Wacom HID 169 Pen,monitor:DSI-1` in `config/mango/config.conf`.
 
 ### 3. Standby & Backlight Recovery (`system/etc/mkinitcpio.conf`)
 - The Cherry Trail SoC PWM hardware controller must be initialized before the `i915` driver binds to the `DSI-1` display.

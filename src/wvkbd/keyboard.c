@@ -306,9 +306,14 @@ kbd_unpress_key(struct kbd *kb, uint32_t time)
         unlatch_super = (kb->mods & Super) == Super;
         unlatch_altgr = (kb->mods & AltGr) == AltGr;
 
-        if (kb->last_press->type == Copy) {
+        if (kb->last_press->type == DeadCombo) {
+            if (kb->last_press->shift_code) {
+                zwp_virtual_keyboard_v1_key(kb->vkbd, time, kb->last_press->shift_code,
+                                            WL_KEYBOARD_KEY_STATE_RELEASED);
+            }
+        } else if (kb->last_press->type == Copy) {
             if (kb->debug) fprintf(stderr, "release copy key (unlatch_shift=%d, mods=%d)\n", unlatch_shift, kb->mods);
-            zwp_virtual_keyboard_v1_key(kb->vkbd, time, 127, // COMP key
+            zwp_virtual_keyboard_v1_key(kb->vkbd, time, 240, // COMP key (safe unassigned scancode, never Menu/127)
                                         WL_KEYBOARD_KEY_STATE_RELEASED);
         } else {
             if (kb->debug) fprintf(stderr, "release key %d", kb->last_press->code);
@@ -547,6 +552,35 @@ kbd_press_key(struct kbd *kb, struct key *k, uint32_t time)
             }
         }
         break;
+    case DeadCombo:
+        kb->last_swipe = kb->last_press = k;
+        kb->last_press_offset = time - monotime();
+        kbd_draw_key(kb, k, Press);
+        if (k->code) {
+            if (k->reset_mod) {
+                zwp_virtual_keyboard_v1_key_mods(kb->vkbd, time, Shift, WL_KEYBOARD_KEY_STATE_PRESSED);
+                zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods | Shift, 0, 0, 0);
+                zwp_virtual_keyboard_v1_key(kb->vkbd, time, k->code, WL_KEYBOARD_KEY_STATE_PRESSED);
+                zwp_virtual_keyboard_v1_key(kb->vkbd, time, k->code, WL_KEYBOARD_KEY_STATE_RELEASED);
+                zwp_virtual_keyboard_v1_key_mods(kb->vkbd, time, Shift, WL_KEYBOARD_KEY_STATE_RELEASED);
+                zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods, 0, 0, 0);
+            } else {
+                zwp_virtual_keyboard_v1_key(kb->vkbd, time, k->code, WL_KEYBOARD_KEY_STATE_PRESSED);
+                zwp_virtual_keyboard_v1_key(kb->vkbd, time, k->code, WL_KEYBOARD_KEY_STATE_RELEASED);
+            }
+        }
+        if (k->code_mod) {
+            zwp_virtual_keyboard_v1_key_mods(kb->vkbd, time, k->code_mod, WL_KEYBOARD_KEY_STATE_PRESSED);
+            zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods | k->code_mod, 0, 0, 0);
+        } else {
+            zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods, 0, 0, 0);
+        }
+        if (k->shift_code) {
+            zwp_virtual_keyboard_v1_key(kb->vkbd, time, k->shift_code, WL_KEYBOARD_KEY_STATE_PRESSED);
+        }
+        if (kb->print || kb->print_intersect)
+            kbd_print_key_stdout(kb, k);
+        break;
     case Copy:
         // copy code as unicode chr by setting a temporary keymap
         kb->last_swipe = kb->last_press = k;
@@ -562,7 +596,7 @@ kbd_press_key(struct kbd *kb, struct key *k, uint32_t time)
             create_and_upload_keymap(kb, kb->layout->keymap_name, k->code);
         }
         zwp_virtual_keyboard_v1_modifiers(kb->vkbd, kb->mods, 0, 0, 0);
-        zwp_virtual_keyboard_v1_key(kb->vkbd, time, 127, // COMP key
+        zwp_virtual_keyboard_v1_key(kb->vkbd, time, 240, // COMP key (safe unassigned scancode, never Menu/127)
                                     WL_KEYBOARD_KEY_STATE_PRESSED);
         if (kb->print || kb->print_intersect)
             kbd_print_key_stdout(kb, k);
@@ -603,7 +637,7 @@ kbd_print_key_stdout(struct kbd *kb, struct key *k)
             handled = false;
             break;
         }
-    } else if (k->type != Copy) {
+    } else if (k->type != Copy && k->type != DeadCombo) {
         return;
     }
 

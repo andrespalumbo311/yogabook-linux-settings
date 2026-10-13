@@ -12,7 +12,7 @@
     ],
     "modules-right": [
         "custom/keyboard",
-        "network",
+        "custom/wifi",
         "custom/battery",
         "tray",
         "custom/notification",
@@ -86,13 +86,13 @@
         "tooltip": false,
         "on-click": "/home/andres/.local/bin/toggle-keyboard"
     },
-    "network": {
-        "format-wifi": "{icon}",
-        "format-ethernet": "󰈀",
-        "format-disconnected": "󰤭",
-        "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
-        "tooltip-format": "{essid} ({signalStrength}%)",
-        "on-click": "/home/andres/.local/bin/toggle-control-center"
+    "custom/wifi": {
+        "exec": "/home/andres/.local/bin/yogabook-wifi-status",
+        "return-type": "json",
+        "interval": 5,
+        "signal": 7,
+        "on-click": "/home/andres/.local/bin/toggle-control-center",
+        "escape": true
     },
     "custom/battery": {
         "exec": "/home/andres/.local/bin/yogabook-battery-status",

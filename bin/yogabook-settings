@@ -95,6 +95,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         # Dynamic row trackers for clean re-renders
         self.network_rows = []
         self.bluetooth_rows = []
+        self.sink_list = []
 
         # Debounced slider queues
         self.vol_debounce_timer = None
@@ -140,11 +141,18 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self._refresh_bluetooth_devices()
         self._refresh_battery_metrics()
         GLib.timeout_add_seconds(4, self._periodic_battery_timer)
+        GLib.timeout_add_seconds(3, self._periodic_bluetooth_timer)
         return GLib.SOURCE_REMOVE
 
     def _periodic_battery_timer(self):
         if self.get_visible():
             self._refresh_battery_metrics()
+        return GLib.SOURCE_CONTINUE
+
+    def _periodic_bluetooth_timer(self):
+        if self.get_visible() and getattr(self, "switch_bt", None) and self.switch_bt.get_active():
+            if not getattr(self, "_is_scanning_bt", False):
+                self._refresh_bluetooth_devices()
         return GLib.SOURCE_CONTINUE
 
     # =========================================================================
@@ -1065,6 +1073,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
             time.sleep(0.3)
             subprocess.run(["bluetoothctl", "power", "on"], check=False)
+            subprocess.run(["bluetoothctl", "pairable", "on"], check=False)
         else:
             subprocess.run(["bluetoothctl", "power", "off"], check=False)
             subprocess.run(["rfkill", "block", "bluetooth"], check=False)
@@ -1079,6 +1088,7 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         if hasattr(self, "btn_scan_bt"):
             self.btn_scan_bt.set_sensitive(False)
             self.btn_scan_bt.set_tooltip_text("Scansione in corso...")
+        self._is_scanning_bt = True
 
         def _worker():
             try:
@@ -1086,10 +1096,13 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 subprocess.run(["rfkill", "unblock", "bluetooth"], check=False)
                 time.sleep(0.2)
                 subprocess.run(["bluetoothctl", "power", "on"], check=False)
-                # Run scan for 6 seconds
-                subprocess.run(["bluetoothctl", "--timeout", "6", "scan", "on"], capture_output=True, text=True, check=False)
+                subprocess.run(["bluetoothctl", "pairable", "on"], check=False)
+                # Run scan for 12 seconds to ensure complete EIR name resolution
+                subprocess.run(["bluetoothctl", "--timeout", "12", "scan", "on"], capture_output=True, text=True, check=False)
             except Exception:
                 pass
+            finally:
+                self._is_scanning_bt = False
             self._fetch_bt_devices()
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1099,13 +1112,23 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
 
     def _fetch_bt_devices(self):
         try:
-            # Query paired devices
-            res_paired = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True, check=False)
-            paired_macs = set()
-            for line in strip_ansi(res_paired.stdout).splitlines():
+            # Query currently connected devices
+            res_conn = subprocess.run(["bluetoothctl", "devices", "Connected"], capture_output=True, text=True, check=False)
+            connected_macs = set()
+            for line in strip_ansi(res_conn.stdout).splitlines():
                 parts = line.strip().split(maxsplit=2)
                 if len(parts) >= 3 and parts[0] == "Device":
-                    paired_macs.add(parts[1])
+                    connected_macs.add(parts[1])
+
+            # Query paired and trusted devices
+            res_paired = subprocess.run(["bluetoothctl", "devices", "Paired"], capture_output=True, text=True, check=False)
+            res_trusted = subprocess.run(["bluetoothctl", "devices", "Trusted"], capture_output=True, text=True, check=False)
+            saved_macs = set()
+            for out in [res_paired.stdout, res_trusted.stdout]:
+                for line in strip_ansi(out).splitlines():
+                    parts = line.strip().split(maxsplit=2)
+                    if len(parts) >= 3 and parts[0] == "Device":
+                        saved_macs.add(parts[1])
 
             # Query all available / discovered devices
             res_all = subprocess.run(["bluetoothctl", "devices"], capture_output=True, text=True, check=False)
@@ -1118,19 +1141,33 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                     name = parts[2]
                     if mac not in seen:
                         seen.add(mac)
-                        devices.append((mac, name, mac in paired_macs))
+                        is_saved = (mac in saved_macs) or (mac in connected_macs)
+                        is_conn = (mac in connected_macs)
+                        # Check if device is nameless / anonymous BLE beacon (name matches MAC address)
+                        is_nameless = (name.replace("-", ":").upper() == mac.upper() or not name.strip())
+                        # Filter out unassociated nameless devices to prevent flooding UI with random hex MACs
+                        if not is_saved and not is_conn and is_nameless:
+                            continue
+                        devices.append((mac, name, is_saved, is_conn))
+                        if is_conn:
+                            self._switch_audio_sink_to_bt(mac)
 
-            # Sort: paired devices first
-            devices.sort(key=lambda d: (not d[2], d[1].lower()))
+            # Sort: connected first, then saved, then alphabetically
+            devices.sort(key=lambda d: (not d[3], not d[2], d[1].lower()))
             GLib.idle_add(self._update_bt_devices_ui, devices)
         except Exception as e:
             print(f"Error fetching bluetooth devices: {e}")
             GLib.idle_add(self._update_bt_devices_ui, [])
 
     def _update_bt_devices_ui(self, devices):
-        if hasattr(self, "btn_scan_bt"):
+        if hasattr(self, "btn_scan_bt") and not getattr(self, "_is_scanning_bt", False):
             self.btn_scan_bt.set_sensitive(True)
             self.btn_scan_bt.set_tooltip_text("Cerca dispositivi Bluetooth")
+
+        new_state = tuple((d[0], d[1], d[2], d[3]) for d in devices)
+        if getattr(self, "_last_bt_devices_state", None) == new_state and self.bluetooth_rows:
+            return
+        self._last_bt_devices_state = new_state
 
         for row in self.bluetooth_rows:
             self.group_bt_devices.remove(row)
@@ -1157,20 +1194,31 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             self.group_bt_devices.add(row)
             self.bluetooth_rows.append(row)
         else:
-            for mac, name, is_paired in devices:
+            for mac, name, is_saved, is_conn in devices:
                 row = Adw.ActionRow()
+                row.set_use_markup(True)
                 row.set_title(safe_markup(name))
-                sub_status = "Accoppiato" if is_paired else "Disponibile"
-                row.set_subtitle(f"{sub_status}  •  MAC: {mac}")
 
-                icon = Gtk.Image.new_from_icon_name("bluetooth-active-symbolic")
+                is_audio = any(w in name.lower() for w in ["airpods", "buds", "head", "wh-", "wf-", "cuffi", "sound", "speaker"])
+
+                if is_conn:
+                    row.set_subtitle(f'<span foreground="#2ec27e" weight="bold">● Connesso</span>  •  MAC: {mac}')
+                    icon_name = "audio-headphones-symbolic" if is_audio else "bluetooth-active-symbolic"
+                elif is_saved:
+                    row.set_subtitle(f"Dispositivo salvato  •  MAC: {mac}")
+                    icon_name = "audio-headphones-symbolic" if is_audio else "bluetooth-symbolic"
+                else:
+                    row.set_subtitle(f"Disponibile  •  MAC: {mac}")
+                    icon_name = "bluetooth-symbolic"
+
+                icon = Gtk.Image.new_from_icon_name(icon_name)
                 icon.set_pixel_size(20)
                 row.add_prefix(icon)
 
                 box_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                 box_actions.set_valign(Gtk.Align.CENTER)
 
-                if is_paired:
+                if is_saved:
                     btn_forget = Gtk.Button(icon_name="edit-delete-symbolic")
                     btn_forget.set_valign(Gtk.Align.CENTER)
                     btn_forget.set_tooltip_text("Rimuovi dispositivo")
@@ -1178,11 +1226,17 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                     btn_forget.connect("clicked", lambda b, m=mac, n=name: self._remove_bluetooth(m, n))
                     box_actions.append(btn_forget)
 
-                    btn_conn = Gtk.Button(label="Connetti")
-                    btn_conn.set_valign(Gtk.Align.CENTER)
-                    btn_conn.add_css_class("suggested-action")
-                    btn_conn.connect("clicked", lambda b, m=mac, n=name, btn=btn_conn: self._connect_bluetooth(m, n, btn))
-                    box_actions.append(btn_conn)
+                    if is_conn:
+                        btn_disconn = Gtk.Button(label="Disconnetti")
+                        btn_disconn.set_valign(Gtk.Align.CENTER)
+                        btn_disconn.connect("clicked", lambda b, m=mac, n=name, btn=btn_disconn: self._disconnect_bluetooth(m, n, btn))
+                        box_actions.append(btn_disconn)
+                    else:
+                        btn_conn = Gtk.Button(label="Connetti")
+                        btn_conn.set_valign(Gtk.Align.CENTER)
+                        btn_conn.add_css_class("suggested-action")
+                        btn_conn.connect("clicked", lambda b, m=mac, n=name, btn=btn_conn: self._connect_bluetooth(m, n, btn))
+                        box_actions.append(btn_conn)
                 else:
                     btn_pair = Gtk.Button(label="Accoppia")
                     btn_pair.set_valign(Gtk.Align.CENTER)
@@ -1193,15 +1247,61 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 self.group_bt_devices.add(row)
                 self.bluetooth_rows.append(row)
 
+    def _switch_audio_sink_to_bt(self, mac):
+        mac_clean = mac.lower()
+        # Retry for up to 6 seconds (12 iterations * 0.5s) to allow PipeWire SPA plugin to negotiate A2DP/codec
+        for _ in range(12):
+            try:
+                out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=False).stdout
+                nodes = json.loads(out)
+                found = False
+                for n in nodes:
+                    if n.get("type") == "PipeWire:Interface:Node":
+                        props = n.get("info", {}).get("props", {})
+                        if props.get("media.class") == "Audio/Sink":
+                            node_bt = props.get("api.bluez5.address", "").lower()
+                            node_name = props.get("node.name", "").lower()
+                            if node_bt == mac_clean or mac_clean.replace(":", "_") in node_name:
+                                node_id = n.get("id")
+                                if node_id:
+                                    subprocess.run(["wpctl", "set-default", str(node_id)], check=False)
+                                    found = True
+                                    break
+                if found:
+                    break
+            except Exception as e:
+                print(f"Error checking audio sink for {mac}: {e}")
+            time.sleep(0.5)
+
+    def _switch_audio_sink_to_internal(self):
+        try:
+            out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=False).stdout
+            nodes = json.loads(out)
+            for n in nodes:
+                if n.get("type") == "PipeWire:Interface:Node":
+                    props = n.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Audio/Sink" and props.get("node.name") == "effect_input.yogabook_dsp":
+                        node_id = n.get("id")
+                        if node_id:
+                            subprocess.run(["wpctl", "set-default", str(node_id)], check=False)
+                            break
+        except Exception as e:
+            print(f"Error switching audio sink to internal: {e}")
+
     def _connect_bluetooth(self, mac, name, button=None):
         if button:
             button.set_sensitive(False)
             button.set_label("Connessione...")
 
         def _worker():
+            subprocess.run(["bluetoothctl", "trust", mac], check=False)
             res = subprocess.run(["bluetoothctl", "connect", mac], capture_output=True, text=True, check=False)
             success = (res.returncode == 0)
             msg = strip_ansi(res.stdout).strip() or strip_ansi(res.stderr).strip()
+
+            if success:
+                time.sleep(1.0)
+                self._switch_audio_sink_to_bt(mac)
 
             def _ui():
                 if button:
@@ -1212,6 +1312,31 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 else:
                     self.add_toast(Adw.Toast.new(f"Errore connessione a '{name}': {msg}"))
                 self._refresh_bluetooth_devices()
+                self._load_audio_state()
+            GLib.idle_add(_ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _disconnect_bluetooth(self, mac, name, button=None):
+        if button:
+            button.set_sensitive(False)
+            button.set_label("Disconnessione...")
+
+        def _worker():
+            res = subprocess.run(["bluetoothctl", "disconnect", mac], capture_output=True, text=True, check=False)
+            success = (res.returncode == 0)
+            msg = strip_ansi(res.stdout).strip() or strip_ansi(res.stderr).strip()
+
+            def _ui():
+                if button:
+                    button.set_sensitive(True)
+                    button.set_label("Disconnetti")
+                if success:
+                    self.add_toast(Adw.Toast.new(f"Disconnesso da '{name}'"))
+                else:
+                    self.add_toast(Adw.Toast.new(f"Errore disconnessione: {msg}"))
+                self._refresh_bluetooth_devices()
+                self._load_audio_state()
             GLib.idle_add(_ui)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1222,32 +1347,70 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             button.set_label("Accoppiamento...")
 
         def _worker():
-            res = subprocess.run(["bluetoothctl", "pair", mac], capture_output=True, text=True, check=False)
-            success = (res.returncode == 0)
-            msg = strip_ansi(res.stdout).strip() or strip_ansi(res.stderr).strip()
-            if success:
-                subprocess.run(["bluetoothctl", "trust", mac], check=False)
-                subprocess.run(["bluetoothctl", "connect", mac], check=False)
+            success = False
+            msg = ""
+            try:
+                # 1. Execute pairing with active agent and pairable mode
+                script = f"power on\npairable on\nagent on\ndefault-agent\npair {mac}\ntrust {mac}\nconnect {mac}\nquit\n"
+                res_pair = subprocess.run(
+                    ["bluetoothctl"],
+                    input=script,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False
+                )
+                raw_pair = strip_ansi(res_pair.stdout) + " " + strip_ansi(res_pair.stderr)
+                chk = subprocess.run(["bluetoothctl", "info", mac], capture_output=True, text=True, check=False).stdout
+
+                if "Paired: yes" in chk or "Pairing successful" in raw_pair or "Connected: yes" in chk:
+                    success = True
+                else:
+                    for line in raw_pair.splitlines():
+                        if "Failed" in line or "error" in line.lower() or "not available" in line.lower():
+                            msg = line.strip()
+                            break
+                    if not msg:
+                        msg = "Verifica che il LED delle cuffie lampeggi di bianco."
+
+                if success:
+                    # Ensure trust and connect
+                    subprocess.run(["bluetoothctl", "trust", mac], check=False)
+                    time.sleep(0.5)
+                    subprocess.run(["bluetoothctl", "connect", mac], capture_output=True, text=True, timeout=10, check=False)
+                    time.sleep(1.0)
+                    self._switch_audio_sink_to_bt(mac)
+            except subprocess.TimeoutExpired:
+                success = False
+                msg = "Tempo scaduto. Tieni premuto il tasto sulla custodia finché il LED lampeggia in bianco."
+            except Exception as e:
+                success = False
+                msg = str(e)
 
             def _ui():
                 if button:
                     button.set_sensitive(True)
                     button.set_label("Accoppia")
                 if success:
-                    self.add_toast(Adw.Toast.new(f"Dispositivo '{name}' accoppiato con successo"))
+                    self.add_toast(Adw.Toast.new(f"Dispositivo '{name}' accoppiato e connesso"))
                 else:
                     self.add_toast(Adw.Toast.new(f"Accoppiamento fallito: {msg}"))
                 self._refresh_bluetooth_devices()
+                self._load_audio_state()
             GLib.idle_add(_ui)
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _remove_bluetooth(self, mac, name):
         def _worker():
+            subprocess.run(["bluetoothctl", "disconnect", mac], check=False)
             subprocess.run(["bluetoothctl", "remove", mac], check=False)
+            self._switch_audio_sink_to_internal()
+
             def _ui():
                 self.add_toast(Adw.Toast.new(f"Dispositivo '{name}' rimosso"))
                 self._refresh_bluetooth_devices()
+                self._load_audio_state()
             GLib.idle_add(_ui)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1261,9 +1424,16 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         page.set_icon_name("audio-volume-high-symbolic")
 
         # --- Group A: Output Sink ---
-        group_out = Adw.PreferencesGroup()
-        group_out.set_title("Uscita Audio (Altoparlanti e Cuffie)")
-        group_out.set_description("Dispositivo principale: Built-in Audio Pro (cht-yogabook)")
+        self.group_out = Adw.PreferencesGroup()
+        self.group_out.set_title("Uscita Audio (Altoparlanti e Cuffie)")
+        self.group_out.set_description("Dispositivo principale: Built-in Audio Pro (cht-yogabook)")
+
+        # Row 0: Output Sink Selector
+        self.row_sink_select = Adw.ComboRow()
+        self.row_sink_select.set_title("Destinazione Output Audio")
+        self.row_sink_select.set_subtitle("Seleziona dove riprodurre l'audio (altoparlanti o cuffie)")
+        self.row_sink_select.connect("notify::selected", self._on_sink_selected)
+        self.group_out.add(self.row_sink_select)
 
         self.row_vol = Adw.ActionRow()
         self.row_vol.set_title("Volume Principale")
@@ -1288,8 +1458,8 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         box_vol.append(self.lbl_vol_val)
         box_vol.append(self.btn_mute_sink)
         self.row_vol.add_suffix(box_vol)
-        group_out.add(self.row_vol)
-        page.add(group_out)
+        self.group_out.add(self.row_vol)
+        page.add(self.group_out)
 
         # --- Group B: Input Source ---
         group_in = Adw.PreferencesGroup()
@@ -1338,12 +1508,24 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
         self.add(page)
         self._load_audio_state()
 
+    def _on_sink_selected(self, combo, param):
+        if self.syncing_audio:
+            return
+        idx = combo.get_selected()
+        if hasattr(self, "sink_list") and 0 <= idx < len(self.sink_list):
+            node_id, desc, name = self.sink_list[idx]
+            subprocess.run(["wpctl", "set-default", str(node_id)], check=False)
+            self._load_audio_state()
+
     def _load_audio_state(self):
         def _worker():
             sink_val = None
             sink_muted = False
             src_val = None
             src_muted = False
+            active_sink_id = None
+            active_sink_desc = None
+            sinks = []
             try:
                 res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, check=False)
                 parts = res.stdout.strip().split()
@@ -1354,6 +1536,38 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 pass
 
             try:
+                res_insp = subprocess.run(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True, check=False)
+                m = re.search(r'id (\d+)', res_insp.stdout)
+                if m:
+                    active_sink_id = int(m.group(1))
+            except Exception:
+                pass
+
+            try:
+                out_pw = subprocess.run(["pw-dump"], capture_output=True, text=True, check=False).stdout
+                nodes = json.loads(out_pw)
+                for n in nodes:
+                    if n.get("type") == "PipeWire:Interface:Node":
+                        props = n.get("info", {}).get("props", {})
+                        if props.get("media.class") == "Audio/Sink":
+                            nid = n.get("id")
+                            name = props.get("node.name", "")
+                            desc = props.get("node.description", name)
+                            if name.startswith("alsa_output.platform-cht-yogabook"):
+                                continue
+                            if "hdmi" in name and "pci" in name:
+                                continue
+                            if name == "effect_input.yogabook_dsp":
+                                desc = "Altoparlanti Integrati (Yoga Book DSP)"
+                            elif props.get("api.bluez5.address"):
+                                desc = f"Cuffie Bluetooth ({desc})"
+                            sinks.append((nid, desc, name))
+                            if nid == active_sink_id:
+                                active_sink_desc = desc
+            except Exception as e:
+                print(f"Error enumerating sinks: {e}")
+
+            try:
                 res = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], capture_output=True, text=True, check=False)
                 parts = res.stdout.strip().split()
                 if len(parts) >= 2:
@@ -1362,16 +1576,29 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
             except Exception:
                 pass
 
-            GLib.idle_add(self._update_audio_ui, sink_val, sink_muted, src_val, src_muted)
+            GLib.idle_add(self._update_audio_ui, sink_val, sink_muted, src_val, src_muted, sinks, active_sink_id, active_sink_desc)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _update_audio_ui(self, sink_val, sink_muted, src_val, src_muted):
+    def _update_audio_ui(self, sink_val, sink_muted, src_val, src_muted, sinks=None, active_sink_id=None, active_sink_desc=None):
         self.syncing_audio = True
         self.is_sink_muted = sink_muted
         if sink_val is not None:
             self.scale_vol.set_value(sink_val)
             self.lbl_vol_val.set_text(f"{sink_val}%" if not sink_muted else f"{sink_val}% (Muto)")
+
+        if sinks is not None and hasattr(self, "row_sink_select") and len(sinks) > 0:
+            self.sink_list = sinks
+            names = [s[1] for s in sinks]
+            self.row_sink_select.set_model(Gtk.StringList.new(names))
+            selected_idx = 0
+            for idx, s in enumerate(sinks):
+                if s[0] == active_sink_id:
+                    selected_idx = idx
+                    break
+            self.row_sink_select.set_selected(selected_idx)
+            if active_sink_desc and hasattr(self, "group_out"):
+                self.group_out.set_description(f"Uscita attiva: {active_sink_desc}")
 
         if hasattr(self, "btn_mute_sink") and hasattr(self, "row_vol"):
             if sink_muted:
@@ -1380,7 +1607,8 @@ class YogaBookSettingsWindow(Adw.PreferencesWindow):
                 self.row_vol.set_subtitle("Audio disattivato (Muto)")
             else:
                 self.btn_mute_sink.remove_css_class("destructive-action")
-                self.row_vol.set_subtitle("Altoparlanti integrati e uscita cuffie 3.5mm")
+                sub_label = active_sink_desc or "Uscita audio di sistema"
+                self.row_vol.set_subtitle(sub_label)
                 if sink_val is not None:
                     if sink_val == 0:
                         self.btn_mute_sink.set_icon_name("audio-volume-muted-symbolic")

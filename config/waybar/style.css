@@ -27,6 +27,7 @@ window#waybar {
 #battery,
 #custom-battery,
 #network,
+#custom-wifi,
 #tray,
 #custom-notification {
     background-color: #f3f4f8;
@@ -145,16 +146,27 @@ window#waybar {
 }
 
 /* Wi-Fi Icon Only (Symmetrically Centered) */
-#network {
+#network,
+#custom-wifi {
     font-size: 15px;
     color: #0b57d0;
     min-width: 38px;
     padding: 2px 0;
 }
-#network.disconnected {
+#network.disconnected,
+#custom-wifi.disconnected {
     color: #dc2626;
 }
-#network label {
+#network.disabled,
+#custom-wifi.disabled {
+    color: #9ca3af;
+}
+#network.linked,
+#custom-wifi.linked {
+    color: #f59e0b;
+}
+#network label,
+#custom-wifi label {
     margin: 0;
     padding: 0;
 }

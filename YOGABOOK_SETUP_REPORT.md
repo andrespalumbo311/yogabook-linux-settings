@@ -142,8 +142,9 @@ This document summarizes all configuration changes, hardware fixes, low-power tu
 
 ## 9. Wacom Create Pad Digitizer Alignment
 * **Device**: `Wacom HID 169 Pen` (`0018:056A:0169` via `i2c-WCOM0019:00`).
-* **Issue observed**: Moving the pen on the Create Pad showed an exact 90°/270° coordinate mismatch with the screen (Top-Right $\rightarrow$ Bottom-Right, Bottom-Right $\rightarrow$ Bottom-Left).
-* **Root cause**: The Wacom digitizer hardware is physically mounted in portrait (1200×1920) matching the display panel. MangoWC lacked the `tablet_map_to_mon` directive, causing `wlroots` to treat the digitizer as unmapped rather than applying the output's 270° landscape transformation.
+* **Issue observed**: Moving the pen on the Create Pad showed an inverted vertical/rotated coordinate mismatch with the screen (placing the pen at the bottom near the spacebar moved the cursor to the top of the display near the hinge).
+* **Root cause**: The Wacom digitizer hardware is physically mounted in portrait (1200×1920) inside the keyboard base (`ABS_X` short axis along vertical, `ABS_Y` long axis along horizontal). `libinput` bypasses calibration matrices for tablet tools by design, while `wlroots` scales normalized coordinates linearly without applying display transforms (`transform 270`).
 * **Fix Applied**:
-  - Added `tablet_map_to_mon=DSI-1` to [`config/mango/config.conf`](file:///home/andres/yogabook-config/config/mango/config.conf#L82).
+  - Implemented lightweight Native C hook [`system/wacom_fix/wacom_fix.so`](file:///home/andres/yogabook-config/system/wacom_fix/wacom_fix.c) registered in `/etc/ld.so.preload`. Intercepts `wlr_cursor_warp_absolute`, queries active rotation state from `/run/user/<uid>/yogabook-rotation.state` with `CLOCK_MONOTONIC_COARSE` caching, and transforms coordinates ($x' = y, y' = 1.0 - x$ for landscape 270).
+  - Added `devicerule=name:Wacom HID 169 Pen,monitor:DSI-1` to [`config/mango/config.conf`](file:///home/andres/yogabook-config/config/mango/config.conf).
   - Coordinates now map 1:1 across all four corners with zero latency and full pressure support.

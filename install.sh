@@ -66,7 +66,9 @@ link_file "$REPO_DIR/bin/yogabook-set-epb"    "$HOME_DIR/.local/bin/yogabook-set
 link_file "$REPO_DIR/bin/yogabook-autobrightness" "$HOME_DIR/.local/bin/yogabook-autobrightness"
 link_file "$REPO_DIR/bin/yogabook-mako-status"     "$HOME_DIR/.local/bin/yogabook-mako-status"
 link_file "$REPO_DIR/bin/yogabook-battery-status" "$HOME_DIR/.local/bin/yogabook-battery-status"
+link_file "$REPO_DIR/bin/yogabook-wifi-status"    "$HOME_DIR/.local/bin/yogabook-wifi-status"
 link_file "$REPO_DIR/bin/yogabook-powerd"         "$HOME_DIR/.local/bin/yogabook-powerd"
+link_file "$REPO_DIR/bin/yogabook-bt-audio-watcher" "$HOME_DIR/.local/bin/yogabook-bt-audio-watcher"
 if [ -f "$REPO_DIR/bin/wvkbd" ]; then
     link_file "$REPO_DIR/bin/wvkbd"          "$HOME_DIR/.local/bin/wvkbd"
 fi
@@ -106,6 +108,7 @@ link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.confi
 link_file "$REPO_DIR/config/systemd/user/mango-workspace-watcher.service" "$HOME_DIR/.config/systemd/user/mango-workspace-watcher.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-autobrightness.service" "$HOME_DIR/.config/systemd/user/yogabook-autobrightness.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-powerd.service"         "$HOME_DIR/.config/systemd/user/yogabook-powerd.service"
+link_file "$REPO_DIR/config/systemd/user/yogabook-bt-audio.service"       "$HOME_DIR/.config/systemd/user/yogabook-bt-audio.service"
 
 # 5. EasyEffects & PipeWire Audio Tuning
 link_file "$REPO_DIR/config/easyeffects/output" "$HOME_DIR/.local/share/easyeffects/output"
@@ -145,6 +148,21 @@ if [[ "${1:-}" == "--system" ]]; then
     fi
     if [ -f "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/62-yogabook-keyboard.rules" /etc/udev/rules.d/62-yogabook-keyboard.rules
+    fi
+    if [ -f "$REPO_DIR/system/etc/udev/rules.d/63-yogabook-wacom.rules" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/udev/rules.d/63-yogabook-wacom.rules" /etc/udev/rules.d/63-yogabook-wacom.rules
+    fi
+    # System preload fixes
+    make -C "$REPO_DIR/system/pamac_fix" all || true
+    make -C "$REPO_DIR/system/wacom_fix" all || true
+    if [ -f "$REPO_DIR/system/pamac_fix/pamac_fix.so" ]; then
+        sudo install -Dm755 "$REPO_DIR/system/pamac_fix/pamac_fix.so" /usr/lib/pamac_fix.so
+    fi
+    if [ -f "$REPO_DIR/system/wacom_fix/wacom_fix.so" ]; then
+        sudo install -Dm755 "$REPO_DIR/system/wacom_fix/wacom_fix.so" /usr/lib/wacom_fix.so
+    fi
+    if [ -f "$REPO_DIR/system/etc/ld.so.preload" ]; then
+        sudo install -Dm644 "$REPO_DIR/system/etc/ld.so.preload" /etc/ld.so.preload
     fi
     if [ -f "$REPO_DIR/src/touch-keyboard/touch_keyboard_handler" ]; then
         sudo install -Dm755 "$REPO_DIR/src/touch-keyboard/touch_keyboard_handler" /usr/bin/touch_keyboard_handler
@@ -198,7 +216,8 @@ if [[ "${1:-}" == "--system" ]]; then
     # Performance & quiet kernel parameters in systemd-boot entries
     for boot_entry in /boot/loader/entries/yogabook.conf /boot/loader/entries/*linux*.conf; do
         if [ -f "$boot_entry" ]; then
-            for param in "mitigations=off" "i915.enable_fbc=1" "transparent_hugepage=madvise" "quiet" "loglevel=3" "pcie_aspm=off" "brcmfmac.feature_disable=0x82000"; do
+            sudo sed -i 's/i915\.enable_fbc=1/i915.enable_fbc=0/g' "$boot_entry"
+            for param in "mitigations=off" "i915.enable_fbc=0" "transparent_hugepage=madvise" "quiet" "loglevel=3" "pcie_aspm=off" "brcmfmac.feature_disable=0x82000"; do
                 if ! grep -q -- "$param" "$boot_entry"; then
                     echo "Adding $param to $boot_entry..."
                     sudo sed -i "s/\(^options .*\)/\1 $param/" "$boot_entry"

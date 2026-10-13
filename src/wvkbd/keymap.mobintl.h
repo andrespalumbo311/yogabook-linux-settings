@@ -135,7 +135,7 @@ xkb_keycodes \"(unnamed)\" {\
         <AE13>               = 132;\
         <LWIN>               = 133;\
         <RWIN>               = 134;\
-        <COMP>               = 135;\
+        <COMP>               = 248;\
         <STOP>               = 136;\
         <AGAI>               = 137;\
         <PROP>               = 138;\
@@ -271,7 +271,7 @@ xkb_keycodes \"(unnamed)\" {\
         indicator 13 = \"Group 2\";\
         indicator 14 = \"Mouse Keys\";\
         alias <AC12>         = <BKSL>;\
-        alias <MENU>         = <COMP>;\
+        alias <MENU>         = <I135>;\
         alias <HZTG>         = <TLDE>;\
         alias <LMTA>         = <LWIN>;\
         alias <RMTA>         = <RWIN>;\
@@ -1227,8 +1227,8 @@ xkb_symbols \"(unnamed)\" {\
         key <AB06>               {	[               n,               N, question ] };\
         key <AB07>               {	[               m,               M, exclam ] };\
         key <AB08>               {	[           comma,      apostrophe, less, U00AB] };\
-        key <AB09>               {	[          period,        question, greater, U00BB] };\
-        key <AB10>               {	[           slash,        greater ] };\
+        key <AB09>               {	[          period,        greater, question, U00BB] };\
+        key <AB10>               {	[           slash,        question ] };\
         key <I147>               {  [      exclamdown,   questiondown, exclamdown ] };\
         key <RTSH>               {	[         Shift_R ] };\
         key <KPMU>               {\
