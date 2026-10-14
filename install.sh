@@ -108,6 +108,7 @@ link_file "$REPO_DIR/config/systemd/user/easyeffects.service"  "$HOME_DIR/.confi
 link_file "$REPO_DIR/config/systemd/user/mango-workspace-watcher.service" "$HOME_DIR/.config/systemd/user/mango-workspace-watcher.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-autobrightness.service" "$HOME_DIR/.config/systemd/user/yogabook-autobrightness.service"
 link_file "$REPO_DIR/config/systemd/user/yogabook-powerd.service"         "$HOME_DIR/.config/systemd/user/yogabook-powerd.service"
+link_file "$REPO_DIR/config/systemd/user/mango-session.target"        "$HOME_DIR/.config/systemd/user/mango-session.target"
 link_file "$REPO_DIR/config/systemd/user/yogabook-bt-audio.service"       "$HOME_DIR/.config/systemd/user/yogabook-bt-audio.service"
 
 # 5. EasyEffects & PipeWire Audio Tuning

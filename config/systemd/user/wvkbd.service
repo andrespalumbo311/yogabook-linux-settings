@@ -2,6 +2,7 @@
 Description=wvkbd - Virtual On-Screen Keyboard
 PartOf=mango-session.target
 After=mango-session.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

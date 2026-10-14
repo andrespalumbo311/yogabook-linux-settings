@@ -1374,3 +1374,32 @@ This document records architectural, packaging, and runtime issues encountered o
   4. Migrated Waybar from `network` to `custom/wifi` ([`config/waybar/config.jsonc`](file:///home/andres/yogabook-config/config/waybar/config.jsonc)), updating [`style.css`](file:///home/andres/yogabook-config/config/waybar/style.css) and hooking `pkill -RTMIN+7 waybar` into [`yogabook-powerd`](file:///home/andres/yogabook-config/src/powerd/main.c) upon sleep resume and into [`yogabook-control-center`](file:///home/andres/yogabook-config/src/control-center/main.c) on quick tile toggle.
 - **Prevention Pattern**:
   In status bar environments, avoid relying on passive Netlink socket state machines for critical interface connectivity metrics on mobile/convertible devices that frequently suspend and resume. Direct POSIX sysfs and `getifaddrs()` queries provide deterministic, stateless status verification with sub-millisecond overhead.
+
+---
+
+## 47. Compositor Segfault on Touch Cancel via NULL Seat Client Dereference & Systemd User Service Rate-Limit Lockout
+
+- **Date**: 2026-10-14
+- **Subsystem**: Wayland Compositor / Input Subsystem / Systemd User Sessions (`wlroots`, `MangoWC`, `wacom_fix.so`, `Waybar`, `greetd`)
+- **Symptoms**:
+  - MangoWC crashes abruptly with a SIGSEGV (`segfault at 58 error 4 in libwlroots-0.20.so`), immediately returning the user to the `greetd` login screen while taking notes in stylus/touch applications (e.g. Xournal++).
+  - After logging back into the desktop session, Waybar and other graphical companion services (`mango-workspace-watcher`, `polkit-gnome`, `wvkbd`) fail to appear automatically.
+  - Inspecting systemd user status reports:
+    ```text
+    Active: failed (Result: start-limit-hit)
+    ```
+- **Root Cause**:
+  1. *Compositor API Misuse in Touch Cancellation*: In MangoWC (`src/input/touch.c` line 321), handling touch cancellation (`handle_cursor_touch_cancel`) invokes `wlr_seat_touch_notify_cancel(server.seat, NULL)` under the erroneous assumption that passing a `NULL` client pointer clears all touch focus on the seat.
+  2. *Unconditional Pointer Dereference in wlroots*: In `libwlroots-0.20.so`, `wlr_seat_touch_notify_cancel` delegates directly to `wlr_seat_touch_send_cancel(seat, seat_client)`. This function unconditionally traverses `wl_resource_for_each(resource, &seat_client->touches)`, dereferencing offset `+0x58` on `%rsi`. When `%rsi` is `0x0`, the instruction `mov 0x58(%rsi), %rdi` triggers an instant segmentation fault (`segfault at 58`).
+  3. *Stylus Hover / Touch Timeout Trigger*: On convertibles with dual digitizers (e.g. Lenovo Yoga Book EMR + capacitive touch), when the pen enters or exits proximity while a touch point exists, the kernel wacom driver emits `wacom_idleprox_timeout: tool appears to be hung in-prox. forcing it out`, firing the compositor's touch cancel handler.
+  4. *Cascading Systemd Rate-Limit Exhaustion*: When Mango crashes, the systemd user manager (`systemd --user`) remains active. Wayland client services configured with `Restart=on-failure` or `Restart=always` and short backoffs (`RestartSec=1s`) repeatedly fail to connect to the dead Wayland socket and hit `StartLimitBurst` within seconds. Upon re-login, `systemctl --user start mango-session.target` does not start services stuck in `failed (start-limit-hit)`.
+- **Resolution**:
+  1. Updated the native shared library interceptor [`system/wacom_fix/wacom_fix.c`](file:///home/andres/yogabook-config/system/wacom_fix/wacom_fix.c) (preloaded via `/etc/ld.so.preload`) to intercept both `wlr_seat_touch_notify_cancel` and `wlr_seat_touch_send_cancel`. If `seat_client == NULL`, the hook safely redirects to `wlr_seat_touch_notify_clear_focus(seat)` without passing `NULL` into `wlr_seat_touch_send_cancel`, completely preventing the segfault.
+  2. Recompiled and installed `wacom_fix.so` to `/usr/lib/wacom_fix.so`.
+  3. Added `exec-once=systemctl --user reset-failed` in [`config/mango/config.conf`](file:///home/andres/yogabook-config/config/mango/config.conf) immediately prior to `start mango-session.target` to clear any residual `start-limit-hit` flags from aborted sessions.
+  4. Added `StartLimitIntervalSec=0` and normalized `RestartSec=2s` across all graphical user unit files (`waybar.service`, `mango-workspace-watcher.service`, `polkit-gnome.service`, `wvkbd.service`) to prevent rate-limit deadlocks during temporary compositor restarts.
+  5. Canonicalized `mango-session.target` inside [`config/systemd/user/mango-session.target`](file:///home/andres/yogabook-config/config/systemd/user/mango-session.target) and wired it into [`install.sh`](file:///home/andres/yogabook-config/install.sh).
+- **Prevention Pattern**:
+  1. When using low-level wlroots APIs in compositors, never assume functions accept `NULL` for `wlr_seat_client*` arguments unless explicitly documented. Use `wlr_seat_touch_notify_clear_focus()` to clear seat focus.
+  2. In minimal Wayland environments where user services are managed by persistent systemd user instances, companion UI units must declare `StartLimitIntervalSec=0` (or appropriate restart delays) and compositor autostart scripts must issue `systemctl --user reset-failed` prior to session target activation to recover gracefully from compositor crashes.
+

@@ -69,3 +69,57 @@ void wlr_cursor_warp_absolute(struct wlr_cursor *cur,
 
     real_warp(cur, dev, nx, ny);
 }
+
+/*
+ * Touch Cancel NULL-Deref Guard:
+ * Upstream MangoWM (0.17.5) calls wlr_seat_touch_notify_cancel(seat, NULL) on touch cancel
+ * assuming NULL clears all touch focus. However, wlroots unconditionally dereferences
+ * seat_client->touches at offset +0x58 in wlr_seat_touch_send_cancel, crashing with SIGSEGV.
+ * We intercept both functions to guard against NULL client pointers and clear focus safely.
+ */
+struct wlr_seat;
+struct wlr_seat_client;
+
+typedef void (*wlr_seat_touch_notify_cancel_fn)(struct wlr_seat *seat,
+                                                struct wlr_seat_client *seat_client);
+static wlr_seat_touch_notify_cancel_fn real_touch_notify_cancel = NULL;
+
+typedef void (*wlr_seat_touch_send_cancel_fn)(struct wlr_seat *seat,
+                                              struct wlr_seat_client *seat_client);
+static wlr_seat_touch_send_cancel_fn real_touch_send_cancel = NULL;
+
+typedef void (*wlr_seat_touch_notify_clear_focus_fn)(struct wlr_seat *seat);
+static wlr_seat_touch_notify_clear_focus_fn real_clear_focus = NULL;
+
+void wlr_seat_touch_send_cancel(struct wlr_seat *seat,
+                                struct wlr_seat_client *seat_client) {
+    if (!seat_client) {
+        return;
+    }
+    if (!real_touch_send_cancel) {
+        real_touch_send_cancel = (wlr_seat_touch_send_cancel_fn)dlsym(RTLD_NEXT, "wlr_seat_touch_send_cancel");
+        if (!real_touch_send_cancel) return;
+    }
+    real_touch_send_cancel(seat, seat_client);
+}
+
+void wlr_seat_touch_notify_cancel(struct wlr_seat *seat,
+                                  struct wlr_seat_client *seat_client) {
+    if (!seat_client) {
+        if (seat) {
+            if (!real_clear_focus) {
+                real_clear_focus = (wlr_seat_touch_notify_clear_focus_fn)dlsym(RTLD_NEXT, "wlr_seat_touch_notify_clear_focus");
+            }
+            if (real_clear_focus) {
+                real_clear_focus(seat);
+            }
+        }
+        return;
+    }
+    if (!real_touch_notify_cancel) {
+        real_touch_notify_cancel = (wlr_seat_touch_notify_cancel_fn)dlsym(RTLD_NEXT, "wlr_seat_touch_notify_cancel");
+        if (!real_touch_notify_cancel) return;
+    }
+    real_touch_notify_cancel(seat, seat_client);
+}
+
