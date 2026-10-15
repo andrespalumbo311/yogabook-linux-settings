@@ -193,6 +193,12 @@ if [[ "${1:-}" == "--system" ]]; then
     if [ -f "$REPO_DIR/system/etc/iwd/main.conf" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/iwd/main.conf" /etc/iwd/main.conf
     fi
+    if [ -d "$REPO_DIR/system/etc/systemd/network" ]; then
+        sudo mkdir -p /etc/systemd/network
+        for f in "$REPO_DIR/system/etc/systemd/network/"*.network; do
+            [ -f "$f" ] && sudo install -Dm644 "$f" "/etc/systemd/network/$(basename "$f")"
+        done
+    fi
     if [ -f "$REPO_DIR/system/etc/conf.d/wireless-regdom" ]; then
         sudo install -Dm644 "$REPO_DIR/system/etc/conf.d/wireless-regdom" /etc/conf.d/wireless-regdom
     fi

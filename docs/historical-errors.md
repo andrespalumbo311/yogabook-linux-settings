@@ -1403,3 +1403,26 @@ This document records architectural, packaging, and runtime issues encountered o
   1. When using low-level wlroots APIs in compositors, never assume functions accept `NULL` for `wlr_seat_client*` arguments unless explicitly documented. Use `wlr_seat_touch_notify_clear_focus()` to clear seat focus.
   2. In minimal Wayland environments where user services are managed by persistent systemd user instances, companion UI units must declare `StartLimitIntervalSec=0` (or appropriate restart delays) and compositor autostart scripts must issue `systemctl --user reset-failed` prior to session target activation to recover gracefully from compositor crashes.
 
+---
+
+## 48. Stale DHCP Lease Retention Across Standby & Wi-Fi Network Transitions via Driver Carrier Persistence (`iwd` vs `systemd-networkd`)
+
+- **Date**: 2026-10-15
+- **Subsystem**: Wireless Subsystem / DHCP & IP Routing / Standby Lifecycle (`iwd`, `systemd-networkd`, `systemd-resolved`, `tailscaled`, `brcmfmac`)
+- **Symptoms**:
+  - Resuming the laptop from sleep (`s2idle`) outside the home network and connecting to a smartphone hotspot (or different Wi-Fi access point) connects successfully at the 802.11 layer, and Waybar displays the connected Wi-Fi icon.
+  - However, all internet traffic and DNS queries fail completely (`network is unreachable`, connection timeouts).
+  - Toggling Wi-Fi off and back on via the Control Center (`rfkill toggle wifi`) immediately restores internet connectivity.
+- **Root Cause**:
+  1. *Driver Carrier Persistence Across 802.11 Deauth*: FullMAC wireless drivers (like Broadcom `brcmfmac`) do not cycle netdevice link carrier (`netif_carrier_off`) during standard wireless deauthentication or 802.11 re-association events.
+  2. *Split-Brain Network State Machine*: In configurations where `iwd` manages 802.11 link authentication while `systemd-networkd` manages DHCP on `wlan0` using a generic match rule (`[Match] Name=wl*`), `systemd-networkd` never detects a carrier drop when switching networks. Because `systemd-networkd` considers the link continuously UP and configured, it retains the previous network's DHCP lease (e.g. `192.168.178.22/24` with default route `192.168.178.1`) without issuing a new `DHCPDISCOVER`.
+  3. *Dead Gateway & DNS Black Hole*: Packets routed towards the old gateway fail, and VPN/overlay routing services (such as Tailscale MagicDNS setting routing domain `~.`) cannot contact DERP relays, causing every DNS request to time out.
+  4. *False-Positive Status Display*: Custom status bar providers checking `has_ip && iwd_connected` report a connected link because an IP is present and `iwd` is associated, concealing the subnet mismatch.
+- **Resolution**:
+  1. Consolidated Layer 2 (802.11 association) and Layer 3 (IP/DHCP/DNS) management directly into `iwd`'s built-in network manager by setting `EnableNetworkConfiguration=true` in [`system/etc/iwd/main.conf`](file:///home/andres/yogabook-config/system/etc/iwd/main.conf).
+  2. Configured `NameResolvingService=systemd` and `RoutePriorityOffset=600` under `[Network]` in `main.conf` to push DNS servers directly to `systemd-resolved` over D-Bus upon association.
+  3. Set `Unmanaged=yes` for wireless interfaces (`Name=wl*`) in [`system/etc/systemd/network/20-wlan.network`](file:///home/andres/yogabook-config/system/etc/systemd/network/20-wlan.network) to prevent `systemd-networkd` from running a conflicting DHCP client.
+  4. Updated [`install.sh`](file:///home/andres/yogabook-config/install.sh) to synchronize `system/etc/systemd/network/` configurations to `/etc/systemd/network/`.
+- **Prevention Pattern**:
+  When using `iwd` on platforms whose wireless drivers do not report netdevice carrier drops upon disassociation, never decouple 802.11 station management from DHCP client management across two separate daemons. Let `iwd` manage network configuration and DHCP internally (`EnableNetworkConfiguration=true`) so that IP leases, default gateways, and DNS resolvers are bound atomically to the 802.11 association lifecycle.
+
