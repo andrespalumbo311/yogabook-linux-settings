@@ -1426,3 +1426,37 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   When using `iwd` on platforms whose wireless drivers do not report netdevice carrier drops upon disassociation, never decouple 802.11 station management from DHCP client management across two separate daemons. Let `iwd` manage network configuration and DHCP internally (`EnableNetworkConfiguration=true`) so that IP leases, default gateways, and DNS resolvers are bound atomically to the 802.11 association lifecycle.
 
+---
+
+## 49. Wayland Layer-Shell Configure Infinite Recursion & Touch Cancel Lockup in Virtual On-Screen Keyboard (`wvkbd` & MangoWC)
+
+- **Date**: 2026-10-15
+- **Subsystem**: Virtual On-Screen Keyboard / Wayland Layer-Shell Protocol / Input Subsystem (`wvkbd`, `MangoWC`, `wlroots`)
+- **Symptoms**:
+  - Rotating the Lenovo Yoga Book into tablet mode ($\ge 190.0^\circ$) suppresses the physical Halo keyboard as expected.
+  - Upon invoking the virtual on-screen keyboard (`wvkbd`) via Waybar toggle or shortcut in portrait or transformed mode, the entire graphical interface freezes completely.
+  - The display stops updating and touch inputs fail to respond, giving the appearance of a total system lockup and requiring a hard power cutoff, despite the Linux kernel, systemd services, and network stack remaining fully active in the background.
+- **Root Cause**:
+  1. *Wayland Layer-Shell Anti-Pattern in `layer_surface_configure`*: When the Wayland compositor negotiates dimensions during surface configuration, if the compositor-reported width or height differed from `keyboard.w` or `keyboard.h` (e.g. fractional scaling rounding, panel height offsets, or portrait orientation transforms), `wvkbd` executed:
+     ```c
+     if (keyboard.w != w || keyboard.h != h) {
+         zwlr_layer_surface_v1_ack_configure(surface, serial);
+         hide();
+         show();
+         return;
+     }
+     ```
+     Calling `hide(); show();` within the configure event handler destroyed the surface and immediately re-requested it. The compositor re-emitted `configure` with the same dimensions, triggering an infinite, synchronous IPC ping-pong loop (`hide() -> show() -> roundtrip -> configure -> hide()`) that starved the compositor event loop.
+  2. *Redundant XDG Popup Creation*: `wvkbd` unconditionally initialized a secondary `xdg_popup` surface via `zwlr_layer_surface_v1_get_popup()` for key press tooltips. Sliding touch inputs across layer-shell popups caused `wlr_seat_touch_notify_cancel` cascades and compositor stalls on mobile touchscreens.
+  3. *Exclusive Zone Window Reflow Spikes*: Running `wvkbd` with exclusive zones forced MangoWC to recursively recompute and resize all tiled application windows (e.g. Brave) on every toggle, creating KMS atomic update underruns on Atom Gen8 graphics.
+- **Resolution**:
+  1. Patched [`src/wvkbd/main.c`](file:///home/andres/yogabook-config/src/wvkbd/main.c) in `layer_surface_configure` to directly update `keyboard.w` and `keyboard.h` in place and trigger `kbd_resize()` without recursively destroying and recreating surfaces.
+  2. Guarded XDG popup surface creation with `if (keyboard.show_popup)` so popup surfaces are completely bypassed when tooltips are disabled.
+  3. Updated [`config/systemd/user/wvkbd.service`](file:///home/andres/yogabook-config/config/systemd/user/wvkbd.service) with `--no-popup` and `--non-exclusive` to eliminate popup allocation and window reflow stalls.
+  4. Improved [`src/helpers/toggle-keyboard.c`](file:///home/andres/yogabook-config/src/helpers/toggle-keyboard.c) to wait for event loop readiness before delivering signals.
+  5. Added emergency exit and reload shortcuts (`CTRL+ALT+BackSpace` to quit compositor, `SUPER+CTRL+R` to reload) in [`config/mango/binds.conf`](file:///home/andres/yogabook-config/config/mango/binds.conf).
+- **Prevention Pattern**:
+  1. Never destroy and recreate Wayland surfaces (`hide(); show();`) from within a `configure` callback when dimensions deviate from client assumptions. A Wayland client must adapt to the compositor-provided geometry dynamically and acknowledge the configure event cleanly.
+  2. For on-screen virtual keyboards on touch devices, avoid auxiliary XDG popups for simple touch feedback; render highlights directly on the main surface canvas to eliminate touch focus cancellations.
+
+

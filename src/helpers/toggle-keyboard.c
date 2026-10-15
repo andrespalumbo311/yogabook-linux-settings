@@ -41,9 +41,13 @@ int main(void) {
     } else {
         int r = system("systemctl --user start wvkbd.service >/dev/null 2>&1");
         (void)r;
-        usleep(200000);
-        pid = find_pid_by_name("wvkbd");
+        for (int i = 0; i < 20; i++) {
+            usleep(50000);
+            pid = find_pid_by_name("wvkbd");
+            if (pid > 0) break;
+        }
         if (pid > 0) {
+            usleep(150000);
             kill(pid, SIGUSR2);
         }
     }

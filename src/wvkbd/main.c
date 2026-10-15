@@ -629,16 +629,14 @@ layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *surface,
         return;
     };
 
-    // Not what we expected, or redimension, refresh and restart
-    if (keyboard.w != w || keyboard.h != h) {
-        zwlr_layer_surface_v1_ack_configure(surface, serial);
-        hide();
-        show();
-        return;
-    };
+    if (w > 0) keyboard.w = w;
+    if (h > 0) keyboard.h = h;
 
-    // Swallow useless events
+    // Swallow redundant events once already configured with matching surface
     if (layer_surface_configured) {
+        zwlr_layer_surface_v1_ack_configure(surface, serial);
+        kbd_resize(&keyboard, layouts, NumLayouts);
+        drwsurf_attach(&draw_surf);
         return;
     };
     layer_surface_configured = true;
@@ -658,27 +656,29 @@ layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *surface,
         wl_surface_set_buffer_scale(draw_surf.surf, keyboard.scale);
     }
 
-    popup_draw_surf.surf = wl_compositor_create_surface(compositor);
+    if (keyboard.show_popup) {
+        popup_draw_surf.surf = wl_compositor_create_surface(compositor);
 
-    xdg_positioner_set_size(popup_xdg_positioner, w, h * 2);
-    xdg_positioner_set_anchor_rect(popup_xdg_positioner, 0, -h, w, h * 2);
+        xdg_positioner_set_size(popup_xdg_positioner, keyboard.w, keyboard.h * 2);
+        xdg_positioner_set_anchor_rect(popup_xdg_positioner, 0, -(int32_t)keyboard.h, keyboard.w, keyboard.h * 2);
 
-    wl_surface_set_input_region(popup_draw_surf.surf, empty_region);
-    popup_xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, popup_draw_surf.surf);
-    popup_xdg_surface_configured = false;
-    xdg_surface_add_listener(popup_xdg_surface, &xdg_popup_surface_listener, NULL);
-    popup_xdg_popup = xdg_surface_get_popup(popup_xdg_surface, NULL, popup_xdg_positioner);
-    xdg_popup_add_listener(popup_xdg_popup, &xdg_popup_listener, NULL);
-    zwlr_layer_surface_v1_get_popup(layer_surface, popup_xdg_popup);
+        wl_surface_set_input_region(popup_draw_surf.surf, empty_region);
+        popup_xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, popup_draw_surf.surf);
+        popup_xdg_surface_configured = false;
+        xdg_surface_add_listener(popup_xdg_surface, &xdg_popup_surface_listener, NULL);
+        popup_xdg_popup = xdg_surface_get_popup(popup_xdg_surface, NULL, popup_xdg_positioner);
+        xdg_popup_add_listener(popup_xdg_popup, &xdg_popup_listener, NULL);
+        zwlr_layer_surface_v1_get_popup(layer_surface, popup_xdg_popup);
 
-    if (wfs_mgr && viewporter) {
-        popup_draw_surf_viewport = wp_viewporter_get_viewport(viewporter, popup_draw_surf.surf);
-        wp_viewport_set_destination(popup_draw_surf_viewport, keyboard.w, keyboard.h * 2);
-    } else {
-        wl_surface_set_buffer_scale(popup_draw_surf.surf, keyboard.scale);
+        if (wfs_mgr && viewporter) {
+            popup_draw_surf_viewport = wp_viewporter_get_viewport(viewporter, popup_draw_surf.surf);
+            wp_viewport_set_destination(popup_draw_surf_viewport, keyboard.w, keyboard.h * 2);
+        } else {
+            wl_surface_set_buffer_scale(popup_draw_surf.surf, keyboard.scale);
+        }
+
+        wl_surface_commit(popup_draw_surf.surf);
     }
-
-    wl_surface_commit(popup_draw_surf.surf);
 
     zwlr_layer_surface_v1_ack_configure(surface, serial);
 
