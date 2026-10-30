@@ -1515,6 +1515,25 @@ This document records architectural, packaging, and runtime issues encountered o
 - **Prevention Pattern**:
   When updating rolling-release window managers or Wayland compositors across version bumps, always check upstream changelogs for schema changes and validate configuration files using syntax validation flags (`-p`, `--check-config`) to prevent fallback to unscaled defaults and intrusive error nagbars.
 
+---
+
+## 53. Unchecked Multi-Surface Configuration Gate in Modular Client Protocol Handlers
+
+- **Date**: 2026-10-30
+- **Subsystem**: Virtual Input / Wayland Protocol State Machine (`wvkbd`, Layer Shell, XDG Popup)
+- **Symptoms**:
+  - A client-rendered on-screen keyboard displays properly when invoked, but all touch and pointer interactions are completely ignored.
+  - Tapping or clicking virtual keys fails to dispatch keystrokes to active target windows despite no compositor errors or crash logs.
+- **Root Cause**:
+  Input event processing loops were guarded by a conjunction check requiring both the primary surface and an optional auxiliary surface (e.g. key-press popup preview) to be configured before processing events (`if (!main_configured || !popup_configured) return;`). When the auxiliary surface was conditionally disabled via a feature flag or CLI argument (`--no-popup`), the auxiliary surface was never requested from the compositor, leaving its configured state flag permanently false and causing input dispatch handlers to drop all inbound touch/pointer events unconditionally.
+- **Resolution**:
+  1. Decouple optional surface readiness from mandatory primary surface readiness in input event pre-checks.
+  2. Implement an input eligibility predicate that only asserts auxiliary surface readiness when that specific feature is actively enabled (`main_configured && (!feature_enabled || aux_configured)`).
+  3. Ensure cleanup routines explicitly reset configuration state flags upon surface destruction.
+- **Prevention Pattern**:
+  When managing compound Wayland client surfaces with optional subsurfaces or popups, never couple global input event reception to the readiness of an optional component without verifying whether that optional component was actually requested.
+
+
 
 
 

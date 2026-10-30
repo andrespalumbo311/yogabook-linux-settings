@@ -675,6 +675,8 @@ void kbd_print_first_utf8_char_stdout(const char *str) {
 void
 kbd_clear_last_popup(struct kbd *kb)
 {
+    if (!kb->show_popup)
+        return;
     if (kb->last_popup_w && kb->last_popup_h) {
         drw_do_clear(kb->popup_surf, kb->last_popup_x, kb->last_popup_y,
                      kb->last_popup_w, kb->last_popup_h);
@@ -779,7 +781,9 @@ kbd_resize(struct kbd *kb, struct layout *layouts, uint8_t layoutcount)
             layoutcount);
 
     drwsurf_resize(kb->surf, kb->w, kb->h, kb->scale);
-    drwsurf_resize(kb->popup_surf, kb->w, kb->h * 2, kb->scale);
+    if (kb->show_popup) {
+        drwsurf_resize(kb->popup_surf, kb->w, kb->h * 2, kb->scale);
+    }
     for (int i = 0; i < layoutcount; i++) {
         if (kb->debug) {
             if (layouts[i].name)

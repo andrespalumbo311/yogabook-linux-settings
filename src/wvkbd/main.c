@@ -70,6 +70,12 @@ static bool run_display = true;
 static int cur_x = -1, cur_y = -1;
 static bool cur_press = false;
 static struct kbd keyboard;
+
+static inline bool
+is_configured(void)
+{
+    return layer_surface_configured && (!keyboard.show_popup || popup_xdg_surface_configured);
+}
 static uint32_t height, normal_height, landscape_height;
 static int rounding = DEFAULT_ROUNDING;
 static bool hidden = false;
@@ -256,7 +262,7 @@ wl_touch_down(void *data, struct wl_touch *wl_touch, uint32_t serial,
               uint32_t time, struct wl_surface *surface, int32_t id,
               wl_fixed_t x, wl_fixed_t y)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -282,7 +288,7 @@ void
 wl_touch_up(void *data, struct wl_touch *wl_touch, uint32_t serial,
             uint32_t time, int32_t id)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -293,7 +299,7 @@ void
 wl_touch_motion(void *data, struct wl_touch *wl_touch, uint32_t time,
                 int32_t id, wl_fixed_t x, wl_fixed_t y)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -345,7 +351,7 @@ void
 wl_pointer_motion(void *data, struct wl_pointer *wl_pointer, uint32_t time,
                   wl_fixed_t surface_x, wl_fixed_t surface_y)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -361,7 +367,7 @@ void
 wl_pointer_button(void *data, struct wl_pointer *wl_pointer, uint32_t serial,
                   uint32_t time, uint32_t button, uint32_t state)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -390,7 +396,7 @@ void
 wl_pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
                 uint32_t axis, wl_fixed_t value)
 {
-    if(!layer_surface_configured || !popup_xdg_surface_configured) {
+    if(!is_configured()) {
         return;
     }
 
@@ -800,6 +806,7 @@ hide()
         wl_surface_destroy(popup_draw_surf.surf);
         popup_draw_surf.surf = NULL;
     }
+    popup_xdg_surface_configured = false;
 
     zwlr_layer_surface_v1_destroy(layer_surface);
     layer_surface = NULL;
