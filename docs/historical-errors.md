@@ -1459,4 +1459,62 @@ This document records architectural, packaging, and runtime issues encountered o
   1. Never destroy and recreate Wayland surfaces (`hide(); show();`) from within a `configure` callback when dimensions deviate from client assumptions. A Wayland client must adapt to the compositor-provided geometry dynamically and acknowledge the configure event cleanly.
   2. For on-screen virtual keyboards on touch devices, avoid auxiliary XDG popups for simple touch feedback; render highlights directly on the main surface canvas to eliminate touch focus cancellations.
 
+---
+
+## 50. GTK 3 Theme Hierarchy and Specificity Override of Custom Widget Styling
+
+- **Date**: 2026-10-25
+- **Subsystem**: GUI Theming / GTK 3 Styling (`GtkCssProvider`, `GtkScale`, `gtk-layer-shell`)
+- **Symptoms**:
+  - CSS rules targeted at core GTK widgets (such as `scale trough` or `scale slider` for volume/brightness bars) fail to apply or remain visually unchanged despite successful CSS provider compilation without warnings.
+  - Widget proportions, margins, and border radii revert to standard Adwaita defaults instead of custom design system tokens (e.g. Material 3 / Material You).
+- **Root Cause**:
+  1. *Insufficient Style Provider Priority*: Injecting styling via `gtk_style_context_add_provider_for_screen` with `GTK_STYLE_PROVIDER_PRIORITY_APPLICATION` (priority 600) permits system themes or user settings with higher or matching specificity (e.g. Adwaita orientation classes `scale.horizontal trough` and `scale.horizontal slider`) to take precedence over custom element selectors.
+  2. *CSS Selector Specificity and Node Sub-Hierarchy*: GTK 3.20+ decomposes `GtkScale` into `scale > contents > trough > [slider | highlight]`. Default themes style `scale.horizontal trough` and `scale.horizontal slider` with negative margins (`margin: -9px 0`) and fixed dimensions (`border-radius: 100%`). A bare `scale trough` selector lacks the class specificity to override orientation-qualified theme rules.
+- **Resolution**:
+  1. Elevate CSS provider priority to `GTK_STYLE_PROVIDER_PRIORITY_USER` (priority 800) to ensure application-level design tokens take precedence over base desktop themes.
+  2. Explicitly attach custom style classes (e.g. `.m3-scale`) to the target widgets via `gtk_style_context_add_class`.
+  3. Include comprehensive specificity matching both orientation classes and explicit sub-nodes (e.g. `scale.m3-scale > contents > trough`, `scale.horizontal.m3-scale trough`) and explicitly neutralize inherited margins and paddings.
+- **Prevention Pattern**:
+  When overriding default widget rendering in GTK 3 embedded shells, always use `GTK_STYLE_PROVIDER_PRIORITY_USER`, bind dedicated widget CSS classes, and mirror the orientation pseudo-classes (`.horizontal`, `.vertical`) used by default GTK themes to guarantee deterministic visual overrides.
+
+---
+
+## 51. Additive GTK Widget and CSS Margins in Wayland Layer-Shell Overlay Panes
+
+- **Date**: 2026-10-26
+- **Subsystem**: Desktop Shell / Layer-Shell Anchoring (`gtk-layer-shell`, GTK 3 Layout Box)
+- **Symptoms**:
+  - A panel or drawer intended to dock directly against a bar (e.g. Waybar at top) appears detached or floating with double the intended offset.
+  - Awkward gaps and rounded corners reveal desktop background between the bar and the dropdown panel.
+- **Root Cause**:
+  In GTK 3, margins specified via C API (`gtk_widget_set_margin_top`, `gtk_widget_set_margin_end`) and margins specified in CSS (`margin: 8px 14px 0 0`) are additive rather than overriding. Setting both simultaneously compounded the offset away from the layer-shell anchor edge (`gtk_layer_set_margin`), detaching the card from the bar.
+- **Resolution**:
+  1. Neutralize C widget margins to 0 (`gtk_widget_set_margin_top(card, 0)`, `gtk_widget_set_margin_end(card, 0)`).
+  2. Handle panel positioning deterministically in CSS or layer-shell margins.
+  3. Flatten the touching edge (`border-top: none; border-radius: 0 0 28px 28px;`) to attach flush against the bar boundary.
+- **Prevention Pattern**:
+  When anchoring layer-shell panels flush against a status bar or panel border, designate either the C API or CSS as the single source of truth for margins, and zero out the opposing layer to prevent unintentional margin compounding.
+
+---
+
+## 52. Upstream Compositor Configuration Schema Deprecation and Error Banner Injection
+
+- **Date**: 2026-10-27
+- **Subsystem**: Compositor / Wayland / MangoWC Configuration (`mangonag`, `outputs.conf`, `config.conf`)
+- **Symptoms**:
+  - Desktop UI elements and fonts appear unusually small upon session login following a compositor package upgrade.
+  - A persistent visual bar, banner, or dark red block ("macchia") appears along the top edge of the screen displaying syntax errors.
+  - Custom display scaling, rotation, and window rules fail to take effect.
+- **Root Cause**:
+  Upstream compositor package update (e.g. `mangowm` 0.17 -> 0.18) introduced breaking changes by standardizing configuration keys to `snake_case` (e.g. `monitorrule` -> `monitor_rule`, `devicerule` -> `device_rule`, `exec-once` -> `exec_once`, `borderpx` -> `border_px`). Upon encountering legacy keys, the compositor rejected the rule blocks (causing display scaling to fall back from 1.5 to 1.0) and spawned a layer-shell error nagbar (`mangonag`) alerting to unknown configuration keywords.
+- **Resolution**:
+  1. Audit configuration syntax using the compositor's internal validation flag (`mango -p -c ~/.config/mango/config.conf`).
+  2. Migrate legacy keys to snake_case format (`monitor_rule`, `device_rule`, `tag_rule`, `exec_once`, `border_px`, `gap_inner_*`, etc.).
+  3. Reload compositor config via IPC (`mmsg dispatch reload_config`) and dismiss or terminate any lingering nagbars (`killall mangonag`).
+- **Prevention Pattern**:
+  When updating rolling-release window managers or Wayland compositors across version bumps, always check upstream changelogs for schema changes and validate configuration files using syntax validation flags (`-p`, `--check-config`) to prevent fallback to unscaled defaults and intrusive error nagbars.
+
+
+
 
