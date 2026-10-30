@@ -1,7 +1,39 @@
 /* ==============================================================================
- * Waybar Light Style - Modern Clean Touch Theme for Lenovo Yoga Book
- * Google Material Design 3 Palette & Symmetrical Touch Targets
+ * Waybar Material You (Material Design 3) Theme for Lenovo Yoga Book
+ * Derived from Google Material 3 Design Tokens (material-components-web)
  * ============================================================================== */
+
+/* Material Design 3 Design Tokens */
+@define-color md-sys-color-primary #0b57d0;
+@define-color md-sys-color-on-primary #ffffff;
+@define-color md-sys-color-primary-container #d3e3fd;
+@define-color md-sys-color-on-primary-container #041e49;
+
+@define-color md-sys-color-surface #ffffff;
+@define-color md-sys-color-surface-dim #ded8e1;
+@define-color md-sys-color-surface-container-lowest #ffffff;
+@define-color md-sys-color-surface-container-low #f7f8fd;
+@define-color md-sys-color-surface-container #eeeff4;
+@define-color md-sys-color-surface-container-high #e7e8ee;
+@define-color md-sys-color-surface-container-highest #e1e2e8;
+
+@define-color md-sys-color-on-surface #1f1f1f;
+@define-color md-sys-color-on-surface-variant #444746;
+@define-color md-sys-color-outline #747775;
+@define-color md-sys-color-outline-variant #c4c7c5;
+
+@define-color md-sys-color-error #ba1a1a;
+@define-color md-sys-color-on-error #ffffff;
+@define-color md-sys-color-error-container #ffdad6;
+@define-color md-sys-color-on-error-container #410002;
+
+@define-color md-sys-color-success #146c2e;
+@define-color md-sys-color-success-container #c4eed0;
+@define-color md-sys-color-on-success-container #07522c;
+
+@define-color md-sys-color-warning #a23f00;
+@define-color md-sys-color-warning-container #ffdec8;
+@define-color md-sys-color-on-warning-container #351000;
 
 * {
     border: none;
@@ -13,12 +45,12 @@
 }
 
 window#waybar {
-    background-color: #ffffff;
-    border-bottom: 2px solid #e2e4ea;
-    color: #1f2937;
+    background-color: @md-sys-color-surface;
+    border-bottom: 1px solid @md-sys-color-surface-container-highest;
+    color: @md-sys-color-on-surface;
 }
 
-/* Base pill styling */
+/* Material You Pill Base (shape.corner.full = 9999px) */
 #custom-launcher,
 #group-workspaces,
 #clock,
@@ -30,30 +62,32 @@ window#waybar {
 #custom-wifi,
 #tray,
 #custom-notification {
-    background-color: #f3f4f8;
+    background-color: @md-sys-color-surface-container;
     margin: 4px 2px;
-    border-radius: 8px;
-    border: 1px solid #e5e7eb;
-    color: #1f2937;
+    border-radius: 9999px;
+    border: none;
+    color: @md-sys-color-on-surface;
+    transition: all 150ms ease;
 }
 
-/* Launcher Button */
+/* Launcher Button (M3 Filled Primary Pill) */
 #custom-launcher {
     font-size: 16px;
-    background-color: #0b57d0;
-    color: #ffffff;
-    padding: 2px 12px;
+    background-color: @md-sys-color-primary;
+    color: @md-sys-color-on-primary;
+    padding: 2px 14px;
     margin-left: 6px;
-    border: 1px solid #0b57d0;
+    border-radius: 9999px;
 }
 #custom-launcher:hover {
     background-color: #1a73e8;
 }
 
-/* Workspace Switcher Group & Dynamic Buttons */
+/* Workspace Switcher Group (M3 Surface Container Pill) */
 #group-workspaces {
-    padding: 1px 3px;
-    background-color: #f3f4f8;
+    padding: 2px 4px;
+    background-color: @md-sys-color-surface-container-low;
+    border: 1px solid @md-sys-color-surface-container-highest;
 }
 
 #custom-ws1,
@@ -62,13 +96,14 @@ window#waybar {
 #custom-ws4,
 #custom-ws5,
 #custom-ws6 {
-    min-width: 24px;
+    min-width: 26px;
     padding: 2px 8px;
-    margin: 2px 2px;
-    border-radius: 6px;
+    margin: 1px 2px;
+    border-radius: 9999px;
     font-weight: 700;
     background-color: transparent;
-    border: 1px solid transparent;
+    border: none;
+    transition: all 120ms ease;
 }
 
 #custom-ws1.active,
@@ -77,9 +112,8 @@ window#waybar {
 #custom-ws4.active,
 #custom-ws5.active,
 #custom-ws6.active {
-    background-color: #0b57d0;
-    color: #ffffff;
-    border: 1px solid #0b57d0;
+    background-color: @md-sys-color-primary;
+    color: @md-sys-color-on-primary;
 }
 
 #custom-ws1.occupied,
@@ -88,9 +122,9 @@ window#waybar {
 #custom-ws4.occupied,
 #custom-ws5.occupied,
 #custom-ws6.occupied {
-    background-color: #ffffff;
-    color: #1f2937;
-    border: 1px solid #c7cddb;
+    background-color: @md-sys-color-surface-container-lowest;
+    color: @md-sys-color-on-surface;
+    border: 1px solid @md-sys-color-outline-variant;
 }
 
 #custom-ws1.empty,
@@ -99,9 +133,9 @@ window#waybar {
 #custom-ws4.empty,
 #custom-ws5.empty,
 #custom-ws6.empty {
-    background-color: #ffffff;
-    color: #5f6368;
-    border: 1px dashed #b0b7c3;
+    background-color: transparent;
+    color: @md-sys-color-outline;
+    border: 1px dashed @md-sys-color-outline-variant;
 }
 
 #custom-ws1.hidden,
@@ -117,53 +151,59 @@ window#waybar {
     background-color: transparent;
 }
 
-/* Center Clock */
+/* Center Clock (M3 Tonal Pill) */
 #clock {
-    color: #1f2937;
+    color: @md-sys-color-on-surface;
     font-weight: 700;
-    padding: 2px 16px;
+    padding: 2px 18px;
+    background-color: @md-sys-color-surface-container;
 }
 #clock:hover {
-    background-color: #e5e7eb;
+    background-color: @md-sys-color-surface-container-high;
 }
 
-/* Virtual Keyboard Button (Symmetrically Centered) */
+/* Virtual Keyboard Button (M3 Primary-Container Accent) */
 #custom-keyboard {
-    background-color: #eff6ff;
-    color: #0b57d0;
+    background-color: @md-sys-color-primary-container;
+    color: @md-sys-color-on-primary-container;
     font-size: 15px;
     min-width: 38px;
     padding: 2px 0;
-    border: 1px solid #bfdbfe;
 }
 #custom-keyboard:hover {
-    background-color: #0b57d0;
-    color: #ffffff;
+    background-color: @md-sys-color-primary;
+    color: @md-sys-color-on-primary;
 }
 #custom-keyboard label {
     margin: 0;
     padding: 0;
 }
 
-/* Wi-Fi Icon Only (Symmetrically Centered) */
+/* Wi-Fi Pill (M3 Surface Container) */
 #network,
 #custom-wifi {
     font-size: 15px;
-    color: #0b57d0;
+    color: @md-sys-color-primary;
     min-width: 38px;
     padding: 2px 0;
 }
+#network:hover,
+#custom-wifi:hover {
+    background-color: @md-sys-color-surface-container-high;
+}
 #network.disconnected,
 #custom-wifi.disconnected {
-    color: #dc2626;
+    background-color: @md-sys-color-error-container;
+    color: @md-sys-color-on-error-container;
 }
 #network.disabled,
 #custom-wifi.disabled {
-    color: #9ca3af;
+    color: @md-sys-color-outline;
 }
 #network.linked,
 #custom-wifi.linked {
-    color: #f59e0b;
+    background-color: @md-sys-color-warning-container;
+    color: @md-sys-color-on-warning-container;
 }
 #network label,
 #custom-wifi label {
@@ -171,24 +211,30 @@ window#waybar {
     padding: 0;
 }
 
-/* Battery */
+/* Battery Pill (M3 Tonal Container with Dynamic States) */
 #battery,
 #custom-battery {
-    padding: 2px 10px;
-    color: #0b57d0;
+    padding: 2px 12px;
+    color: @md-sys-color-primary;
+}
+#battery:hover,
+#custom-battery:hover {
+    background-color: @md-sys-color-surface-container-high;
 }
 #battery.charging,
 #custom-battery.charging {
-    color: #16a34a;
+    background-color: @md-sys-color-success-container;
+    color: @md-sys-color-on-success-container;
 }
 #battery.warning:not(.charging),
 #custom-battery.warning:not(.charging) {
-    color: #ea580c;
+    background-color: @md-sys-color-warning-container;
+    color: @md-sys-color-on-warning-container;
 }
 #battery.critical:not(.charging),
 #custom-battery.critical:not(.charging) {
-    background-color: #dc2626;
-    color: #ffffff;
+    background-color: @md-sys-color-error;
+    color: @md-sys-color-on-error;
 }
 
 /* System Tray */
@@ -197,35 +243,34 @@ window#waybar {
     margin-right: 2px;
 }
 
-/* Notification & Control Center Bell (Symmetrically Centered) */
+/* Notification & Control Center Bell (M3 Notification Pill) */
 #custom-notification {
     font-size: 15px;
-    color: #ea580c;
+    color: @md-sys-color-primary;
     min-width: 38px;
     padding: 2px 0;
 }
 #custom-notification:hover {
-    background-color: #e5e7eb;
+    background-color: @md-sys-color-surface-container-high;
 }
 #custom-notification label {
     margin: 0;
     padding: 0;
 }
 
-/* Close Window Button (Top-Right Corner, Highlighted Red) */
+/* Close Window Button (M3 Error-Container Accent Pill) */
 #custom-close {
-    background-color: #fef2f2;
-    color: #dc2626;
+    background-color: @md-sys-color-error-container;
+    color: @md-sys-color-error;
     font-size: 15px;
     font-weight: bold;
     min-width: 38px;
     padding: 2px 0;
     margin-right: 6px;
-    border: 1px solid #fecaca;
 }
 #custom-close:hover {
-    background-color: #dc2626;
-    color: #ffffff;
+    background-color: @md-sys-color-error;
+    color: @md-sys-color-on-error;
 }
 #custom-close label {
     margin: 0;
